@@ -40,7 +40,7 @@ def build_prompt(analysis_type: str, context: dict, results: dict) -> str:
 
 
 # -------------------------------------------------------------------
-# Helper CI functions
+# Helper CI / stats functions
 # -------------------------------------------------------------------
 def ci_mean_t(data, alpha=0.05):
     data = pd.Series(data).dropna()
@@ -109,6 +109,28 @@ def compute_vif(data, predictors, var_types):
     return pd.DataFrame(vif_rows)
 
 
+def sanitize_header(row) -> list:
+    """
+    Take a pandas Series (one row) and return a list of
+    unique, non-empty string column names suitable for st.data_editor.
+    """
+    cols = []
+    seen = {}
+    for val in row:
+        if pd.isna(val) or str(val).strip() == "":
+            base = "col"
+        else:
+            base = str(val).strip()
+        count = seen.get(base, 0)
+        if count == 0:
+            name = base
+        else:
+            name = f"{base}_{count+1}"
+        seen[base] = count + 1
+        cols.append(name)
+    return cols
+
+
 # -------------------------------------------------------------------
 # Streamlit layout
 # -------------------------------------------------------------------
@@ -165,27 +187,45 @@ header_idx = int(header_row - 1)
 data_start_idx = int(data_start_row - 1)
 
 # Build clean df: use chosen header row as column names, drop rows above data_start
-header = raw_df.iloc[header_idx].astype(str)
+raw_header_row = raw_df.iloc[header_idx]
+columns = sanitize_header(raw_header_row)
+
 df = raw_df.iloc[data_start_idx:].copy()
-df.columns = header
+df.columns = columns
 df.reset_index(drop=True, inplace=True)
 
 st.subheader("Processed data (this is what the analysis will use)")
 edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
-# 2. Variable types
-st.sidebar.header("Step 2: Define Variables")
+# 2. Choose columns + variable types
+st.sidebar.header("Step 2: Columns & Variable Types")
+
+columns_for_analysis = st.sidebar.multiselect(
+    "Columns to include in analysis (uncheck to 'delete' a column from analysis):",
+    list(edited_df.columns),
+    default=list(edited_df.columns),
+)
+
+if not columns_for_analysis:
+    st.warning("Select at least one column to include in the analysis.")
+    st.stop()
+
+data_df = edited_df[columns_for_analysis].copy()
+
+st.sidebar.caption("You can change these selections anytime; the app will update automatically.")
+
 var_types = {}
-for col in edited_df.columns:
-    default_type = "Quantitative" if np.issubdtype(edited_df[col].dtype, np.number) else "Categorical"
+for col in data_df.columns:
+    default_type = "Quantitative" if np.issubdtype(data_df[col].dtype, np.number) else "Categorical"
     var_types[col] = st.sidebar.selectbox(
-        f"{col}",
+        f"{col} (variable type)",
         ["Quantitative", "Categorical"],
-        index=0 if default_type == "Quantitative" else 1
+        index=0 if default_type == "Quantitative" else 1,
+        key=f"vartype_{col}",
     )
 
-quant_vars = [c for c in edited_df.columns if var_types[c] == "Quantitative"]
-cat_vars = [c for c in edited_df.columns if var_types[c] == "Categorical"]
+quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
+cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
 
 st.sidebar.markdown("---")
 
@@ -214,8 +254,8 @@ if analysis_choice == "Descriptive statistics":
     target = st.radio("Describe:", ["One variable", "Two categorical variables (crosstab)"])
 
     if target == "One variable":
-        var = st.selectbox("Pick a variable", edited_df.columns)
-        series = edited_df[var].dropna()
+        var = st.selectbox("Pick a variable", data_df.columns)
+        series = data_df[var].dropna()
 
         if var_types[var] == "Quantitative":
             st.write("### Summary statistics")
@@ -263,7 +303,7 @@ if analysis_choice == "Descriptive statistics":
         else:
             c1 = st.selectbox("Row variable", cat_vars)
             c2 = st.selectbox("Column variable", [c for c in cat_vars if c != c1])
-            data = edited_df[[c1, c2]].dropna()
+            data = data_df[[c1, c2]].dropna()
             ct = pd.crosstab(data[c1], data[c2])
             st.write("### Crosstab")
             st.dataframe(ct)
@@ -356,7 +396,7 @@ elif analysis_choice == "One-sample inference (means/proportions)":
             st.warning("You need at least one quantitative variable.")
         else:
             dv = st.selectbox("Outcome variable (numeric)", quant_vars)
-            data = edited_df[dv].dropna()
+            data = data_df[dv].dropna()
             test_value = st.number_input("Null hypothesis mean (H₀: μ = ?)", value=float(data.mean()))
             sigma_known = st.checkbox("Use z-test (σ known)? Otherwise t-test.", value=False)
             alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
@@ -407,8 +447,8 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                 st.code(prompt, language="markdown")
 
     else:  # Proportion (z)
-        var = st.selectbox("Binary outcome variable", edited_df.columns)
-        data = edited_df[var].dropna()
+        var = st.selectbox("Binary outcome variable", data_df.columns)
+        data = data_df[var].dropna()
         if data.dtype == "bool":
             x = data.astype(int)
         else:
@@ -457,7 +497,7 @@ elif analysis_choice == "Paired or two-sample comparisons":
         else:
             v1 = st.selectbox("First measure (e.g., Before)", quant_vars)
             v2 = st.selectbox("Second measure (e.g., After)", [v for v in quant_vars if v != v1])
-            data = edited_df[[v1, v2]].dropna()
+            data = data_df[[v1, v2]].dropna()
             diff = data[v2] - data[v1]
             n = len(diff)
             dbar = diff.mean()
@@ -493,7 +533,7 @@ elif analysis_choice == "Paired or two-sample comparisons":
         else:
             dv = st.selectbox("Outcome (numeric)", quant_vars)
             iv = st.selectbox("Grouping variable (2 groups)", cat_vars)
-            data = edited_df[[dv, iv]].dropna()
+            data = data_df[[dv, iv]].dropna()
             groups = data[iv].unique()
             if len(groups) != 2:
                 st.warning("Grouping variable must have exactly 2 groups.")
@@ -545,7 +585,7 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
     else:
         dv = st.selectbox("Outcome (numeric)", quant_vars)
         iv = st.selectbox("Grouping variable (category)", cat_vars)
-        data = edited_df[[dv, iv]].dropna()
+        data = data_df[[dv, iv]].dropna()
         groups = data[iv].unique()
         if len(groups) < 3:
             st.warning("ANOVA requires at least 3 groups.")
@@ -587,7 +627,7 @@ elif analysis_choice == "Categorical association (chi-square)":
     else:
         c1 = st.selectbox("First categorical variable", cat_vars)
         c2 = st.selectbox("Second categorical variable", [c for c in cat_vars if c != c1])
-        data = edited_df[[c1, c2]].dropna()
+        data = data_df[[c1, c2]].dropna()
         contingency = pd.crosstab(data[c1], data[c2])
 
         st.write("### Contingency table")
@@ -621,7 +661,7 @@ elif analysis_choice == "Correlation & regression":
         else:
             x_var = st.selectbox("X (numeric)", quant_vars)
             y_var = st.selectbox("Y (numeric)", [v for v in quant_vars if v != x_var])
-            data = edited_df[[x_var, y_var]].dropna()
+            data = data_df[[x_var, y_var]].dropna()
             r, p_val = stats.pearsonr(data[x_var], data[y_var])
 
             summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
@@ -653,7 +693,7 @@ elif analysis_choice == "Correlation & regression":
             st.warning("Need at least one quantitative outcome.")
         else:
             dv = st.selectbox("Outcome (Y, numeric)", quant_vars)
-            predictors = st.multiselect("Predictors (X)", [c for c in edited_df.columns if c != dv])
+            predictors = st.multiselect("Predictors (X)", [c for c in data_df.columns if c != dv])
 
             if predictors:
                 terms = []
@@ -663,7 +703,7 @@ elif analysis_choice == "Correlation & regression":
                     else:
                         terms.append(p)
                 formula = dv + " ~ " + " + ".join(terms)
-                data = edited_df[[dv] + predictors].dropna()
+                data = data_df[[dv] + predictors].dropna()
 
                 model = smf.ols(formula, data=data).fit()
 
