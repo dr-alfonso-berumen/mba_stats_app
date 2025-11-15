@@ -60,7 +60,9 @@ def ci_diff_means_welch(x1, x2, alpha=0.05):
     x2 = pd.Series(x2).dropna()
     n1, n2 = len(x1), len(x2)
     m1, m2 = x1.mean(), x2.mean()
-    s1, s2 = x1.std(ddof=1), x2.std(ddof=1)
+    s1, s2 = x1.std(ddof=1), x1.std(ddof=1)
+    s1 = x1.std(ddof=1)
+    s2 = x2.std(ddof=1)
     se = np.sqrt(s1**2 / n1 + s2**2 / n2)
     df = (s1**2 / n1 + s2**2 / n2) ** 2 / (
         (s1**2 / n1) ** 2 / (n1 - 1) + (s2**2 / n2) ** 2 / (n2 - 1)
@@ -197,11 +199,20 @@ df.reset_index(drop=True, inplace=True)
 st.subheader("Processed data (this is what the analysis will use)")
 edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
+# Allow students to download current edited data (for saving work)
+csv_bytes = edited_df.to_csv(index=False).encode("utf-8")
+st.download_button(
+    "Download current data as CSV (for saving & re-uploading later)",
+    csv_bytes,
+    "mba_stats_data.csv",
+    "text/csv",
+)
+
 # 2. Choose columns + variable types
 st.sidebar.header("Step 2: Columns & Variable Types")
 
 columns_for_analysis = st.sidebar.multiselect(
-    "Columns to include in analysis (uncheck to 'delete' a column from analysis):",
+    "Columns to include in analysis (uncheck to 'delete' from analysis):",
     list(edited_df.columns),
     default=list(edited_df.columns),
 )
@@ -251,38 +262,73 @@ st.sidebar.markdown("---")
 if analysis_choice == "Descriptive statistics":
     st.header("Descriptive Statistics")
 
-    target = st.radio("Describe:", ["One variable", "Two categorical variables (crosstab)"])
+    # Optional: overall descriptive table for all quantitative variables
+    if quant_vars:
+        with st.expander("Show descriptive statistics for ALL quantitative variables"):
+            desc_all = data_df[quant_vars].describe().T
+            # Add variance, skew, kurtosis
+            desc_all["variance"] = data_df[quant_vars].var()
+            desc_all["skewness"] = data_df[quant_vars].skew()
+            desc_all["kurtosis"] = data_df[quant_vars].kurtosis()
+            st.dataframe(desc_all)
+
+    target = st.radio("Focus on:", ["One variable", "Two categorical variables (crosstab)"])
 
     if target == "One variable":
         var = st.selectbox("Pick a variable", data_df.columns)
-        series = data_df[var].dropna()
+        series_raw = data_df[var]
 
         if var_types[var] == "Quantitative":
-            st.write("### Summary statistics")
-            st.write(series.describe())
+            # Coerce to numeric to avoid QQ/plot issues
+            series = pd.to_numeric(series_raw, errors="coerce").dropna()
+            n_total = len(series_raw)
+            n_numeric = len(series)
+            if n_numeric < n_total:
+                st.caption(
+                    f"Note: {n_total - n_numeric} non-numeric values were ignored for numeric summaries and plots."
+                )
 
-            # Histogram
-            st.write("### Histogram")
-            fig, ax = plt.subplots()
-            ax.hist(series, bins="auto")
-            ax.set_xlabel(var)
-            ax.set_ylabel("Frequency")
-            st.pyplot(fig)
+            if len(series) == 0:
+                st.warning("No numeric data available for this variable.")
+            else:
+                st.write("### Detailed summary statistics")
+                desc = series.describe()
+                extra = pd.Series(
+                    {
+                        "variance": series.var(),
+                        "skewness": series.skew(),
+                        "kurtosis": series.kurtosis(),
+                    }
+                )
+                full_desc = pd.concat([desc, extra]).to_frame("Value")
+                st.dataframe(full_desc)
 
-            # Boxplot
-            st.write("### Boxplot")
-            fig, ax = plt.subplots()
-            ax.boxplot(series, vert=True)
-            ax.set_ylabel(var)
-            st.pyplot(fig)
+                # Histogram
+                st.write("### Histogram")
+                fig, ax = plt.subplots()
+                ax.hist(series, bins="auto")
+                ax.set_xlabel(var)
+                ax.set_ylabel("Frequency")
+                st.pyplot(fig)
 
-            # QQ plot
-            st.write("### QQ plot (Normality check)")
-            fig = sm.ProbPlot(series, dist=stats.norm, fit=True).qqplot(line="45")
-            st.pyplot(fig)
+                # Boxplot
+                st.write("### Boxplot")
+                fig, ax = plt.subplots()
+                ax.boxplot(series, vert=True)
+                ax.set_ylabel(var)
+                st.pyplot(fig)
+
+                # QQ plot (guard against too few points)
+                st.write("### QQ plot (Normality check)")
+                if len(series) >= 3:
+                    fig = sm.ProbPlot(series, dist=stats.norm, fit=True).qqplot(line="45")
+                    st.pyplot(fig)
+                else:
+                    st.info("Not enough observations to draw a QQ plot (need at least 3).")
 
         else:
-            st.write("### Frequency table")
+            series = series_raw.dropna()
+            st.write("### Frequency table (counts)")
             freq = series.value_counts()
             st.dataframe(freq.to_frame("Count"))
 
@@ -305,19 +351,38 @@ if analysis_choice == "Descriptive statistics":
             c2 = st.selectbox("Column variable", [c for c in cat_vars if c != c1])
             data = data_df[[c1, c2]].dropna()
             ct = pd.crosstab(data[c1], data[c2])
-            st.write("### Crosstab")
+
+            st.write("### Crosstab (counts)")
             st.dataframe(ct)
 
-            st.write("### Stacked bar chart (proportions by row)")
+            # Row percentages
             row_prop = ct.div(ct.sum(axis=1), axis=0)
+            st.write("### Row percentages")
+            st.dataframe((row_prop * 100).round(2))
+
+            st.write("### Clustered bar chart (row % by column category)")
+            # Build clustered (side-by-side) bars showing row proportions
+            row_categories = row_prop.index.astype(str)
+            col_categories = row_prop.columns.astype(str)
+            x = np.arange(len(row_categories))
+            total_bars = len(col_categories)
+            width = 0.8 / max(total_bars, 1)
+
             fig, ax = plt.subplots()
-            bottom = np.zeros(len(row_prop))
-            for col in row_prop.columns:
-                ax.bar(row_prop.index.astype(str), row_prop[col].values, bottom=bottom, label=str(col))
-                bottom += row_prop[col].values
-            ax.set_ylabel("Proportion")
+            for i, col in enumerate(col_categories):
+                offsets = x + (i - (total_bars - 1) / 2) * width
+                ax.bar(
+                    offsets,
+                    (row_prop[col].values * 100),
+                    width=width,
+                    label=str(col),
+                )
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(row_categories, rotation=45)
+            ax.set_ylabel("Row percentage (%)")
+            ax.set_xlabel(c1)
             ax.legend(title=c2)
-            plt.xticks(rotation=45)
             st.pyplot(fig)
 
 # -------------------------------------------------------------------
@@ -396,55 +461,58 @@ elif analysis_choice == "One-sample inference (means/proportions)":
             st.warning("You need at least one quantitative variable.")
         else:
             dv = st.selectbox("Outcome variable (numeric)", quant_vars)
-            data = data_df[dv].dropna()
+            data = pd.to_numeric(data_df[dv], errors="coerce").dropna()
             test_value = st.number_input("Null hypothesis mean (H₀: μ = ?)", value=float(data.mean()))
             sigma_known = st.checkbox("Use z-test (σ known)? Otherwise t-test.", value=False)
             alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
 
             if st.button("Run one-sample test"):
                 n = len(data)
-                xbar = data.mean()
-                s = data.std(ddof=1)
-
-                if sigma_known:
-                    sigma = st.number_input("Population σ (known)", value=float(s))
-                    se = sigma / np.sqrt(n)
-                    z_stat = (xbar - test_value) / se
-                    p_val = 2 * (1 - stats.norm.cdf(abs(z_stat)))
-                    z_crit = stats.norm.ppf(1 - alpha / 2)
-                    ci_lower = xbar - z_crit * se
-                    ci_upper = xbar + z_crit * se
-                    summary = (
-                        f"n={n}, x̄={xbar:.3f}, σ={sigma:.3f}, "
-                        f"z={z_stat:.3f}, p={p_val:.4f}, "
-                        f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
-                    )
-                    st.write(summary)
-                    results = {"summary": summary}
-                    context = {
-                        "description": "Test whether a sample mean differs from a hypothesized population mean using a z-test.",
-                        "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
-                    }
-                    prompt = build_prompt("one-sample z-test for a mean", context, results)
-
+                if n == 0:
+                    st.error("No numeric data available for this variable.")
                 else:
-                    xbar, (ci_lower, ci_upper), se, df_ = ci_mean_t(data, alpha=alpha)
-                    t_stat = (xbar - test_value) / se
-                    p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
-                    summary = (
-                        f"n={n}, x̄={xbar:.3f}, s={s:.3f}, t({df_})={t_stat:.3f}, p={p_val:.4f}, "
-                        f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
-                    )
-                    st.write(summary)
-                    results = {"summary": summary}
-                    context = {
-                        "description": "Test whether a sample mean differs from a hypothesized population mean using a t-test.",
-                        "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
-                    }
-                    prompt = build_prompt("one-sample t-test for a mean", context, results)
+                    xbar = data.mean()
+                    s = data.std(ddof=1)
 
-                st.subheader("Optional: AI Explanation Prompt (Gemini)")
-                st.code(prompt, language="markdown")
+                    if sigma_known:
+                        sigma = st.number_input("Population σ (known)", value=float(s))
+                        se = sigma / np.sqrt(n)
+                        z_stat = (xbar - test_value) / se
+                        p_val = 2 * (1 - stats.norm.cdf(abs(z_stat)))
+                        z_crit = stats.norm.ppf(1 - alpha / 2)
+                        ci_lower = xbar - z_crit * se
+                        ci_upper = xbar + z_crit * se
+                        summary = (
+                            f"n={n}, x̄={xbar:.3f}, σ={sigma:.3f}, "
+                            f"z={z_stat:.3f}, p={p_val:.4f}, "
+                            f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                        )
+                        st.write(summary)
+                        results = {"summary": summary}
+                        context = {
+                            "description": "Test whether a sample mean differs from a hypothesized population mean using a z-test.",
+                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
+                        }
+                        prompt = build_prompt("one-sample z-test for a mean", context, results)
+
+                    else:
+                        xbar, (ci_lower, ci_upper), se, df_ = ci_mean_t(data, alpha=alpha)
+                        t_stat = (xbar - test_value) / se
+                        p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
+                        summary = (
+                            f"n={n}, x̄={xbar:.3f}, s={s:.3f}, t({df_})={t_stat:.3f}, p={p_val:.4f}, "
+                            f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                        )
+                        st.write(summary)
+                        results = {"summary": summary}
+                        context = {
+                            "description": "Test whether a sample mean differs from a hypothesized population mean using a t-test.",
+                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
+                        }
+                        prompt = build_prompt("one-sample t-test for a mean", context, results)
+
+                    st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                    st.code(prompt, language="markdown")
 
     else:  # Proportion (z)
         var = st.selectbox("Binary outcome variable", data_df.columns)
@@ -498,34 +566,38 @@ elif analysis_choice == "Paired or two-sample comparisons":
             v1 = st.selectbox("First measure (e.g., Before)", quant_vars)
             v2 = st.selectbox("Second measure (e.g., After)", [v for v in quant_vars if v != v1])
             data = data_df[[v1, v2]].dropna()
-            diff = data[v2] - data[v1]
+            diff = pd.to_numeric(data[v2], errors="coerce") - pd.to_numeric(data[v1], errors="coerce")
+            diff = diff.dropna()
             n = len(diff)
-            dbar = diff.mean()
-            s_d = diff.std(ddof=1)
-            se = s_d / np.sqrt(n)
-            df_ = n - 1
-            t_stat = dbar / se
-            alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
-            t_crit = stats.t.ppf(1 - alpha / 2, df_)
-            ci_lower = dbar - t_crit * se
-            ci_upper = dbar + t_crit * se
-            p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
+            if n == 0:
+                st.error("No numeric paired data available.")
+            else:
+                dbar = diff.mean()
+                s_d = diff.std(ddof=1)
+                se = s_d / np.sqrt(n)
+                df_ = n - 1
+                t_stat = dbar / se
+                alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
+                t_crit = stats.t.ppf(1 - alpha / 2, df_)
+                ci_lower = dbar - t_crit * se
+                ci_upper = dbar + t_crit * se
+                p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
 
-            summary = (
-                f"n={n}, mean difference={dbar:.3f}, sd_diff={s_d:.3f}, "
-                f"t({df_})={t_stat:.3f}, p={p_val:.4f}, "
-                f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
-            )
-            st.write(summary)
+                summary = (
+                    f"n={n}, mean difference={dbar:.3f}, sd_diff={s_d:.3f}, "
+                    f"t({df_})={t_stat:.3f}, p={p_val:.4f}, "
+                    f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                )
+                st.write(summary)
 
-            results = {"summary": summary}
-            context = {
-                "description": "Compare before/after or matched pairs using a paired t-test.",
-                "variables": f"Before: {v1}, After: {v2}."
-            }
-            prompt = build_prompt("paired t-test", context, results)
-            st.subheader("Optional: AI Explanation Prompt (Gemini)")
-            st.code(prompt, language="markdown")
+                results = {"summary": summary}
+                context = {
+                    "description": "Compare before/after or matched pairs using a paired t-test.",
+                    "variables": f"Before: {v1}, After: {v2}."
+                }
+                prompt = build_prompt("paired t-test", context, results)
+                st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                st.code(prompt, language="markdown")
 
     else:
         if not quant_vars or not cat_vars:
@@ -539,40 +611,43 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 st.warning("Grouping variable must have exactly 2 groups.")
             else:
                 g1, g2 = groups[0], groups[1]
-                x1 = data[data[iv] == g1][dv]
-                x2 = data[data[iv] == g2][dv]
+                x1 = pd.to_numeric(data[data[iv] == g1][dv], errors="coerce").dropna()
+                x2 = pd.to_numeric(data[data[iv] == g2][dv], errors="coerce").dropna()
                 equal_var = st.checkbox("Assume equal variances", value=True)
                 alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
 
-                t_stat, p_val = stats.ttest_ind(x1, x2, equal_var=equal_var)
-                diff, (ci_lower, ci_upper), se, df_ = ci_diff_means_welch(x1, x2, alpha=alpha)
+                if len(x1) == 0 or len(x2) == 0:
+                    st.error("Not enough numeric data in one or both groups.")
+                else:
+                    t_stat, p_val = stats.ttest_ind(x1, x2, equal_var=equal_var)
+                    diff, (ci_lower, ci_upper), se, df_ = ci_diff_means_welch(x1, x2, alpha=alpha)
 
-                st.write("### Group summaries")
-                desc = data.groupby(iv)[dv].agg(["count", "mean", "std"])
-                st.dataframe(desc)
+                    st.write("### Group summaries")
+                    desc = data.groupby(iv)[dv].agg(["count", "mean", "std"])
+                    st.dataframe(desc)
 
-                summary = (
-                    f"Group 1 ({g1}): n={len(x1)}, mean={x1.mean():.3f}, sd={x1.std(ddof=1):.3f}\n"
-                    f"Group 2 ({g2}): n={len(x2)}, mean={x2.mean():.3f}, sd={x2.std(ddof=1):.3f}\n"
-                    f"Difference (mean1 - mean2)={diff:.3f}, t({df_:.1f})={t_stat:.3f}, p={p_val:.4f}, "
-                    f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
-                )
-                st.text(summary)
+                    summary = (
+                        f"Group 1 ({g1}): n={len(x1)}, mean={x1.mean():.3f}, sd={x1.std(ddof=1):.3f}\n"
+                        f"Group 2 ({g2}): n={len(x2)}, mean={x2.mean():.3f}, sd={x2.std(ddof=1):.3f}\n"
+                        f"Difference (mean1 - mean2)={diff:.3f}, t({df_:.1f})={t_stat:.3f}, p={p_val:.4f}, "
+                        f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                    )
+                    st.text(summary)
 
-                st.write("### Boxplot by group")
-                fig, ax = plt.subplots()
-                ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
-                ax.set_ylabel(dv)
-                st.pyplot(fig)
+                    st.write("### Boxplot by group")
+                    fig, ax = plt.subplots()
+                    ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
+                    ax.set_ylabel(dv)
+                    st.pyplot(fig)
 
-                results = {"summary": summary}
-                context = {
-                    "description": "Compare the average outcome between two independent groups using a two-sample t-test.",
-                    "variables": f"Outcome: {dv}. Grouping: {iv} with levels {g1} and {g2}."
-                }
-                prompt = build_prompt("two-sample t-test", context, results)
-                st.subheader("Optional: AI Explanation Prompt (Gemini)")
-                st.code(prompt, language="markdown")
+                    results = {"summary": summary}
+                    context = {
+                        "description": "Compare the average outcome between two independent groups using a two-sample t-test.",
+                        "variables": f"Outcome: {dv}. Grouping: {iv} with levels {g1} and {g2}."
+                    }
+                    prompt = build_prompt("two-sample t-test", context, results)
+                    st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                    st.code(prompt, language="markdown")
 
 # -------------------------------------------------------------------
 # E. ANOVA
@@ -590,31 +665,37 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
         if len(groups) < 3:
             st.warning("ANOVA requires at least 3 groups.")
         else:
-            samples = [data[data[iv] == g][dv] for g in groups]
-            f_stat, p_val = stats.f_oneway(*samples)
+            samples = [
+                pd.to_numeric(data[data[iv] == g][dv], errors="coerce").dropna()
+                for g in groups
+            ]
+            if any(len(s) == 0 for s in samples):
+                st.error("One or more groups have no numeric data.")
+            else:
+                f_stat, p_val = stats.f_oneway(*samples)
 
-            desc = data.groupby(iv)[dv].agg(["count", "mean", "std"])
-            st.write("### Group summaries")
-            st.dataframe(desc)
+                desc = data.groupby(iv)[dv].agg(["count", "mean", "std"])
+                st.write("### Group summaries")
+                st.dataframe(desc)
 
-            summary = f"F-statistic={f_stat:.3f}, p-value={p_val:.4f}"
-            st.write("### ANOVA result")
-            st.write(summary)
+                summary = f"F-statistic={f_stat:.3f}, p-value={p_val:.4f}"
+                st.write("### ANOVA result")
+                st.write(summary)
 
-            st.write("### Boxplot by group")
-            fig, ax = plt.subplots()
-            ax.boxplot(samples, labels=[str(g) for g in groups])
-            ax.set_ylabel(dv)
-            st.pyplot(fig)
+                st.write("### Boxplot by group")
+                fig, ax = plt.subplots()
+                ax.boxplot(samples, labels=[str(g) for g in groups])
+                ax.set_ylabel(dv)
+                st.pyplot(fig)
 
-            results = {"summary": summary + "\n" + desc.to_string()}
-            context = {
-                "description": "Compare mean outcomes across multiple groups using one-way ANOVA.",
-                "variables": f"Outcome: {dv}. Grouping variable: {iv} with groups {list(groups)}."
-            }
-            prompt = build_prompt("one-way ANOVA", context, results)
-            st.subheader("Optional: AI Explanation Prompt (Gemini)")
-            st.code(prompt, language="markdown")
+                results = {"summary": summary + "\n" + desc.to_string()}
+                context = {
+                    "description": "Compare mean outcomes across multiple groups using one-way ANOVA.",
+                    "variables": f"Outcome: {dv}. Grouping variable: {iv} with groups {list(groups)}."
+                }
+                prompt = build_prompt("one-way ANOVA", context, results)
+                st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                st.code(prompt, language="markdown")
 
 # -------------------------------------------------------------------
 # F. Chi-square (categorical association)
@@ -630,7 +711,7 @@ elif analysis_choice == "Categorical association (chi-square)":
         data = data_df[[c1, c2]].dropna()
         contingency = pd.crosstab(data[c1], data[c2])
 
-        st.write("### Contingency table")
+        st.write("### Contingency table (counts)")
         st.dataframe(contingency)
 
         chi2, p, dof, expected = stats.chi2_contingency(contingency)
@@ -662,31 +743,38 @@ elif analysis_choice == "Correlation & regression":
             x_var = st.selectbox("X (numeric)", quant_vars)
             y_var = st.selectbox("Y (numeric)", [v for v in quant_vars if v != x_var])
             data = data_df[[x_var, y_var]].dropna()
-            r, p_val = stats.pearsonr(data[x_var], data[y_var])
+            x_num = pd.to_numeric(data[x_var], errors="coerce")
+            y_num = pd.to_numeric(data[y_var], errors="coerce")
+            df_corr = pd.DataFrame({x_var: x_num, y_var: y_num}).dropna()
 
-            summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
-            st.write(summary)
+            if len(df_corr) == 0:
+                st.error("No numeric paired data available for correlation.")
+            else:
+                r, p_val = stats.pearsonr(df_corr[x_var], df_corr[y_var])
 
-            st.write("### Scatterplot with regression line")
-            fig, ax = plt.subplots()
-            ax.scatter(data[x_var], data[y_var])
-            ax.set_xlabel(x_var)
-            ax.set_ylabel(y_var)
+                summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
+                st.write(summary)
 
-            slope, intercept = np.polyfit(data[x_var], data[y_var], 1)
-            x_vals = np.linspace(data[x_var].min(), data[x_var].max(), 100)
-            y_vals = intercept + slope * x_vals
-            ax.plot(x_vals, y_vals)
-            st.pyplot(fig)
+                st.write("### Scatterplot with regression line")
+                fig, ax = plt.subplots()
+                ax.scatter(df_corr[x_var], df_corr[y_var])
+                ax.set_xlabel(x_var)
+                ax.set_ylabel(y_var)
 
-            results = {"summary": summary}
-            context = {
-                "description": "Measure the strength and direction of the linear relationship between two quantitative variables.",
-                "variables": f"X: {x_var}, Y: {y_var}."
-            }
-            prompt = build_prompt("Pearson correlation", context, results)
-            st.subheader("Optional: AI Explanation Prompt (Gemini)")
-            st.code(prompt, language="markdown")
+                slope, intercept = np.polyfit(df_corr[x_var], df_corr[y_var], 1)
+                x_vals = np.linspace(df_corr[x_var].min(), df_corr[x_var].max(), 100)
+                y_vals = intercept + slope * x_vals
+                ax.plot(x_vals, y_vals)
+                st.pyplot(fig)
+
+                results = {"summary": summary}
+                context = {
+                    "description": "Measure the strength and direction of the linear relationship between two quantitative variables.",
+                    "variables": f"X: {x_var}, Y: {y_var}."
+                }
+                prompt = build_prompt("Pearson correlation", context, results)
+                st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                st.code(prompt, language="markdown")
 
     else:
         if not quant_vars:
@@ -705,96 +793,108 @@ elif analysis_choice == "Correlation & regression":
                 formula = dv + " ~ " + " + ".join(terms)
                 data = data_df[[dv] + predictors].dropna()
 
-                model = smf.ols(formula, data=data).fit()
+                # Coerce numeric variables to numeric
+                for c in [dv] + predictors:
+                    if var_types.get(c) == "Quantitative":
+                        data[c] = pd.to_numeric(data[c], errors="coerce")
+                data = data.dropna()
 
-                st.write("### Regression formula")
-                st.code(formula)
+                if len(data) == 0:
+                    st.error("No complete numeric data for regression.")
+                else:
+                    model = smf.ols(formula, data=data).fit()
 
-                st.write("### Coefficients with confidence intervals")
-                coef = model.params
-                conf = model.conf_int()
-                coef_df = pd.DataFrame({
-                    "Estimate": coef,
-                    "CI Lower": conf[0],
-                    "CI Upper": conf[1]
-                })
-                st.dataframe(coef_df)
+                    st.write("### Regression formula")
+                    st.code(formula)
 
-                st.write(f"R-squared={model.rsquared:.3f}, Adjusted R-squared={model.rsquared_adj:.3f}")
+                    st.write("### Coefficients with confidence intervals")
+                    coef = model.params
+                    conf = model.conf_int()
+                    coef_df = pd.DataFrame({
+                        "Estimate": coef,
+                        "CI Lower": conf[0],
+                        "CI Upper": conf[1]
+                    })
+                    st.dataframe(coef_df)
 
-                if st.checkbox("Show regression diagnostics (residuals & plots)"):
-                    fitted = model.fittedvalues
-                    resid = model.resid
+                    st.write(f"R-squared={model.rsquared:.3f}, Adjusted R-squared={model.rsquared_adj:.3f}")
 
-                    diag_df = pd.DataFrame({"fitted": fitted, "residual": resid})
-                    st.write("### Residuals (first 50)")
-                    st.dataframe(diag_df.head(50))
+                    if st.checkbox("Show regression diagnostics (residuals & plots)"):
+                        fitted = model.fittedvalues
+                        resid = model.resid
 
-                    st.write("### Residuals vs Fitted")
-                    fig, ax = plt.subplots()
-                    ax.scatter(fitted, resid)
-                    ax.axhline(0, linestyle="--")
-                    ax.set_xlabel("Fitted values")
-                    ax.set_ylabel("Residuals")
-                    st.pyplot(fig)
+                        diag_df = pd.DataFrame({"fitted": fitted, "residual": resid})
+                        st.write("### Residuals (first 50)")
+                        st.dataframe(diag_df.head(50))
 
-                    st.write("### Histogram of residuals")
-                    fig, ax = plt.subplots()
-                    ax.hist(resid, bins="auto")
-                    ax.set_xlabel("Residual")
-                    ax.set_ylabel("Frequency")
-                    st.pyplot(fig)
+                        st.write("### Residuals vs Fitted")
+                        fig, ax = plt.subplots()
+                        ax.scatter(fitted, resid)
+                        ax.axhline(0, linestyle="--")
+                        ax.set_xlabel("Fitted values")
+                        ax.set_ylabel("Residuals")
+                        st.pyplot(fig)
 
-                    st.write("### QQ plot of residuals")
-                    fig = sm.ProbPlot(resid, dist=stats.norm, fit=True).qqplot(line="45")
-                    st.pyplot(fig)
+                        st.write("### Histogram of residuals")
+                        fig, ax = plt.subplots()
+                        ax.hist(resid, bins="auto")
+                        ax.set_xlabel("Residual")
+                        ax.set_ylabel("Frequency")
+                        st.pyplot(fig)
 
-                if st.checkbox("Show multicollinearity diagnostics (VIF)"):
-                    vif_df = compute_vif(data, predictors, var_types)
-                    st.write("### VIF for predictors")
-                    st.dataframe(vif_df)
+                        st.write("### QQ plot of residuals")
+                        if len(resid) >= 3:
+                            fig = sm.ProbPlot(resid, dist=stats.norm, fit=True).qqplot(line="45")
+                            st.pyplot(fig)
+                        else:
+                            st.info("Not enough residuals to make a QQ plot (need at least 3).")
 
-                st.write("### Prediction at specified values")
-                user_inputs = {}
-                for p in predictors:
-                    if var_types[p] == "Quantitative":
-                        default_val = float(data[p].mean())
-                        user_inputs[p] = st.number_input(f"Value for {p}", value=default_val)
-                    else:
-                        levels = data[p].unique()
-                        user_inputs[p] = st.selectbox(f"Category for {p}", options=levels)
+                    if st.checkbox("Show multicollinearity diagnostics (VIF)"):
+                        vif_df = compute_vif(data, predictors, var_types)
+                        st.write("### VIF for predictors")
+                        st.dataframe(vif_df)
 
-                alpha = st.number_input(
-                    "Significance level α for intervals",
-                    value=0.05,
-                    min_value=0.0001,
-                    max_value=0.5
-                )
+                    st.write("### Prediction at specified values")
+                    user_inputs = {}
+                    for p in predictors:
+                        if var_types[p] == "Quantitative":
+                            default_val = float(data[p].mean())
+                            user_inputs[p] = st.number_input(f"Value for {p}", value=default_val)
+                        else:
+                            levels = data[p].unique()
+                            user_inputs[p] = st.selectbox(f"Category for {p}", options=levels)
 
-                if st.button("Compute prediction and intervals"):
-                    new_df = pd.DataFrame([user_inputs])
-                    pred_frame = regression_prediction_with_intervals(model, new_df, alpha=alpha)
-                    st.dataframe(pred_frame[["mean", "mean_ci_lower", "mean_ci_upper",
-                                             "obs_ci_lower", "obs_ci_upper"]])
-
-                    summary = (
-                        f"R-squared={model.rsquared:.3f}, Adj R-squared={model.rsquared_adj:.3f}\n"
-                        f"Coefficients:\n{model.params.to_string()}\n\n"
-                        f"Prediction at X={user_inputs}:\n"
-                        f"Predicted mean={pred_frame['mean'].iloc[0]:.3f}, "
-                        f"{100*(1-alpha):.1f}% CI for mean=({pred_frame['mean_ci_lower'].iloc[0]:.3f}, "
-                        f"{pred_frame['mean_ci_upper'].iloc[0]:.3f}), "
-                        f"{100*(1-alpha):.1f}% prediction interval=({pred_frame['obs_ci_lower'].iloc[0]:.3f}, "
-                        f"{pred_frame['obs_ci_upper'].iloc[0]:.3f})"
+                    alpha = st.number_input(
+                        "Significance level α for intervals",
+                        value=0.05,
+                        min_value=0.0001,
+                        max_value=0.5
                     )
 
-                    st.write(summary.replace("\n", "  \n"))
+                    if st.button("Compute prediction and intervals"):
+                        new_df = pd.DataFrame([user_inputs])
+                        pred_frame = regression_prediction_with_intervals(model, new_df, alpha=alpha)
+                        st.dataframe(pred_frame[["mean", "mean_ci_lower", "mean_ci_upper",
+                                                 "obs_ci_lower", "obs_ci_upper"]])
 
-                    results = {"summary": summary}
-                    context = {
-                        "description": "Use a regression model to predict the outcome for a specific business scenario and interpret the strength and uncertainty of the prediction.",
-                        "variables": f"Outcome: {dv}. Predictors: {predictors}."
-                    }
-                    prompt = build_prompt("linear regression with prediction and diagnostics", context, results)
-                    st.subheader("Optional: AI Explanation Prompt (Gemini)")
-                    st.code(prompt, language="markdown")
+                        summary = (
+                            f"R-squared={model.rsquared:.3f}, Adj R-squared={model.rsquared_adj:.3f}\n"
+                            f"Coefficients:\n{model.params.to_string()}\n\n"
+                            f"Prediction at X={user_inputs}:\n"
+                            f"Predicted mean={pred_frame['mean'].iloc[0]:.3f}, "
+                            f"{100*(1-alpha):.1f}% CI for mean=({pred_frame['mean_ci_lower'].iloc[0]:.3f}, "
+                            f"{pred_frame['mean_ci_upper'].iloc[0]:.3f}), "
+                            f"{100*(1-alpha):.1f}% prediction interval=({pred_frame['obs_ci_lower'].iloc[0]:.3f}, "
+                            f"{pred_frame['obs_ci_upper'].iloc[0]:.3f})"
+                        )
+
+                        st.write(summary.replace("\n", "  \n"))
+
+                        results = {"summary": summary}
+                        context = {
+                            "description": "Use a regression model to predict the outcome for a specific business scenario and interpret the strength and uncertainty of the prediction.",
+                            "variables": f"Outcome: {dv}. Predictors: {predictors}."
+                        }
+                        prompt = build_prompt("linear regression with prediction and diagnostics", context, results)
+                        st.subheader("Optional: AI Explanation Prompt (Gemini)")
+                        st.code(prompt, language="markdown")
