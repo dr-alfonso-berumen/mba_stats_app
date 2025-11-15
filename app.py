@@ -138,6 +138,35 @@ def interpret_pvalue(p, alpha):
         return f"At α = {alpha}, the result is not statistically significant (fail to reject H₀)."
 
 
+def infer_var_type(series: pd.Series) -> str:
+    """
+    Heuristic to infer 'Quantitative' vs 'Categorical'.
+
+    - Tries to coerce to numeric.
+    - If mostly non-numeric -> Categorical.
+    - If numeric with few distinct values -> Categorical (e.g., 0/1, 1-5 Likert).
+    - Otherwise -> Quantitative.
+    """
+    s = series.dropna()
+
+    if s.empty:
+        return "Categorical"
+
+    num = pd.to_numeric(s, errors="coerce")
+    non_numeric_frac = num.isna().mean()
+
+    if non_numeric_frac > 0.5:
+        return "Categorical"
+
+    num = num.dropna()
+    nunique = num.nunique()
+
+    if nunique <= 10:
+        return "Categorical"
+
+    return "Quantitative"
+
+
 # -------------------------------------------------------------------
 # Streamlit layout
 # -------------------------------------------------------------------
@@ -228,20 +257,68 @@ if not columns_for_analysis:
 
 data_df = edited_df[columns_for_analysis].copy()
 
-st.sidebar.caption("You can change these selections anytime; the app will update automatically.")
+st.sidebar.caption("Variable types are auto-detected; you can override them at any time.")
 
 var_types = {}
 for col in data_df.columns:
-    default_type = "Quantitative" if np.issubdtype(data_df[col].dtype, np.number) else "Categorical"
+    inferred = infer_var_type(data_df[col])
     var_types[col] = st.sidebar.selectbox(
-        f"{col} (variable type)",
+        f"{col} (variable type) [auto: {inferred}]",
         ["Quantitative", "Categorical"],
-        index=0 if default_type == "Quantitative" else 1,
+        index=0 if inferred == "Quantitative" else 1,
         key=f"vartype_{col}",
     )
 
 quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
 cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
+
+# 2b. Data explorer & filters
+with st.expander("Explore & filter data"):
+    st.write("### Full data (after column selection)")
+    st.dataframe(data_df, use_container_width=True, height=300)
+
+    st.write("### Optional filters")
+    filtered_df = data_df.copy()
+
+    for col in data_df.columns:
+        col_data = filtered_df[col]
+        if col_data.dropna().empty:
+            continue
+
+        if var_types[col] == "Quantitative":
+            # Only apply slider if column is numeric after coercion
+            numeric_col = pd.to_numeric(col_data, errors="coerce")
+            if numeric_col.dropna().empty:
+                continue
+            col_min = float(numeric_col.min())
+            col_max = float(numeric_col.max())
+            if col_min == col_max:
+                continue  # no range to filter on
+            f_min, f_max = st.slider(
+                f"{col} range filter",
+                min_value=col_min,
+                max_value=col_max,
+                value=(col_min, col_max),
+            )
+            mask = numeric_col.between(f_min, f_max)
+            filtered_df = filtered_df[mask]
+
+        else:
+            categories = sorted(col_data.dropna().unique().astype(str))
+            if not categories:
+                continue
+            selected = st.multiselect(
+                f"{col} values to include",
+                categories,
+                default=categories,
+            )
+            filtered_df = filtered_df[filtered_df[col].astype(str).isin(selected)]
+
+    st.write("### Filtered data preview")
+    st.dataframe(filtered_df, use_container_width=True, height=300)
+
+# Use filtered data for all subsequent analyses
+data_df = filtered_df.copy()
 
 st.sidebar.markdown("---")
 
@@ -268,13 +345,15 @@ if analysis_choice == "Descriptive statistics":
     st.header("Descriptive Statistics")
 
     # Optional: overall descriptive table for all quantitative variables
+    quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
+    cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
+
     if quant_vars:
         with st.expander("Show descriptive statistics for ALL quantitative variables"):
-            desc_all = data_df[quant_vars].describe().T
-            # Add variance, skew, kurtosis
-            desc_all["variance"] = data_df[quant_vars].var()
-            desc_all["skewness"] = data_df[quant_vars].skew()
-            desc_all["kurtosis"] = data_df[quant_vars].kurtosis()
+            desc_all = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").describe().T
+            desc_all["variance"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").var()
+            desc_all["skewness"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").skew()
+            desc_all["kurtosis"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").kurtosis()
             st.dataframe(desc_all)
 
     target = st.radio("Focus on:", ["One variable", "Two categorical variables (crosstab)"])
@@ -284,7 +363,6 @@ if analysis_choice == "Descriptive statistics":
         series_raw = data_df[var]
 
         if var_types[var] == "Quantitative":
-            # Coerce to numeric to avoid QQ/plot issues
             series = pd.to_numeric(series_raw, errors="coerce").dropna()
             n_total = len(series_raw)
             n_numeric = len(series)
@@ -308,7 +386,6 @@ if analysis_choice == "Descriptive statistics":
                 full_desc = pd.concat([desc, extra]).to_frame("Value")
                 st.dataframe(full_desc)
 
-                # Histogram
                 st.write("### Histogram")
                 fig, ax = plt.subplots()
                 ax.hist(series, bins="auto")
@@ -316,14 +393,12 @@ if analysis_choice == "Descriptive statistics":
                 ax.set_ylabel("Frequency")
                 st.pyplot(fig)
 
-                # Boxplot
                 st.write("### Boxplot")
                 fig, ax = plt.subplots()
                 ax.boxplot(series, vert=True)
                 ax.set_ylabel(var)
                 st.pyplot(fig)
 
-                # QQ plot (Normality check)
                 st.write("### QQ plot (Normality check)")
                 if len(series) >= 3:
                     fig = sm.ProbPlot(series, dist=stats.norm, fit=True).qqplot(line="45")
@@ -360,13 +435,11 @@ if analysis_choice == "Descriptive statistics":
             st.write("### Crosstab (counts)")
             st.dataframe(ct)
 
-            # Row percentages
             row_prop = ct.div(ct.sum(axis=1), axis=0)
             st.write("### Row percentages")
             st.dataframe((row_prop * 100).round(2))
 
             st.write("### Clustered bar chart (row % by column category)")
-            # Build clustered (side-by-side) bars showing row proportions
             row_categories = row_prop.index.astype(str)
             col_categories = row_prop.columns.astype(str)
             x = np.arange(len(row_categories))
@@ -404,7 +477,6 @@ elif analysis_choice == "Normal probabilities & critical values":
 
     mode = st.radio("What would you like to compute?", ["Probability given X", "X value given probability"])
 
-    # Helper for plotting shaded normal
     def plot_normal_shaded(mu, sigma, tail_type, x=None, a=None, b=None, p=None, from_prob=False):
         xs = np.linspace(mu - 4 * sigma, mu + 4 * sigma, 500)
         ys = norm.pdf(xs, loc=mu, scale=sigma)
@@ -418,15 +490,13 @@ elif analysis_choice == "Normal probabilities & critical values":
         mask = np.zeros_like(xs, dtype=bool)
 
         if not from_prob:
-            # shading based on numeric x / (a,b)
             if tail_type == "P(X ≤ x)":
                 mask = xs <= x
             elif tail_type == "P(X ≥ x)":
                 mask = xs >= x
-            else:  # P(a ≤ X ≤ b)
+            else:
                 mask = (xs >= a) & (xs <= b)
         else:
-            # from probability, we have x from p
             if tail_type.startswith("Lower"):
                 mask = xs <= x
             else:
@@ -502,6 +572,7 @@ elif analysis_choice == "One-sample inference (means/proportions)":
     test_kind = st.radio("Choose test type", ["Mean (z or t)", "Proportion (z)"])
 
     if test_kind == "Mean (z or t)":
+        quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
         if not quant_vars:
             st.warning("You need at least one quantitative variable.")
         else:
@@ -541,7 +612,11 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                         }
                         st.write("### Test results (structured)")
                         st.table(pd.DataFrame([out]))
-                        st.info(interpret_pvalue(p_val, alpha))
+                        msg = interpret_pvalue(p_val, alpha)
+                        if p_val < alpha:
+                            st.success(msg)
+                        else:
+                            st.warning(msg)
 
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, σ={sigma:.3f}, "
@@ -574,7 +649,11 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                         }
                         st.write("### Test results (structured)")
                         st.table(pd.DataFrame([out]))
-                        st.info(interpret_pvalue(p_val, alpha))
+                        msg = interpret_pvalue(p_val, alpha)
+                        if p_val < alpha:
+                            st.success(msg)
+                        else:
+                            st.warning(msg)
 
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, s={s:.3f}, t({df_})={t_stat:.3f}, p={p_val:.4f}, "
@@ -626,7 +705,11 @@ elif analysis_choice == "One-sample inference (means/proportions)":
             }
             st.write("### Test results (structured)")
             st.table(pd.DataFrame([out]))
-            st.info(interpret_pvalue(p_val, alpha))
+            msg = interpret_pvalue(p_val, alpha)
+            if p_val < alpha:
+                st.success(msg)
+            else:
+                st.warning(msg)
 
             summary = (
                 f"n={n}, p̂={p_hat:.3f}, p0={p0:.3f}, z={z_stat:.3f}, p={p_val:.4f}, "
@@ -651,6 +734,7 @@ elif analysis_choice == "Paired or two-sample comparisons":
     mode = st.radio("Choose", ["Paired (matched) t-test", "Independent two-sample t-test"])
 
     if mode == "Paired (matched) t-test":
+        quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
         if len(quant_vars) < 2:
             st.warning("Need two quantitative variables (e.g., before/after).")
         else:
@@ -688,7 +772,11 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 }
                 st.write("### Test results (structured)")
                 st.table(pd.DataFrame([out]))
-                st.info(interpret_pvalue(p_val, alpha))
+                msg = interpret_pvalue(p_val, alpha)
+                if p_val < alpha:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
 
                 summary = (
                     f"n={n}, mean difference={dbar:.3f}, sd_diff={s_d:.3f}, "
@@ -706,6 +794,8 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 st.code(prompt, language="markdown")
 
     else:
+        quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
+        cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
         if not quant_vars or not cat_vars:
             st.warning("Need a quantitative outcome and a categorical grouping variable.")
         else:
@@ -749,7 +839,11 @@ elif analysis_choice == "Paired or two-sample comparisons":
                     }
                     st.write("### Test results (structured)")
                     st.table(pd.DataFrame([out]))
-                    st.info(interpret_pvalue(p_val, alpha))
+                    msg = interpret_pvalue(p_val, alpha)
+                    if p_val < alpha:
+                        st.success(msg)
+                    else:
+                        st.warning(msg)
 
                     st.write("### Boxplot by group")
                     fig, ax = plt.subplots()
@@ -778,6 +872,9 @@ elif analysis_choice == "Paired or two-sample comparisons":
 # -------------------------------------------------------------------
 elif analysis_choice == "ANOVA (compare 3+ group means)":
     st.header("ANOVA: Compare 3+ Group Means")
+
+    quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
+    cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
 
     if not quant_vars or not cat_vars:
         st.warning("Need a quantitative outcome and a categorical grouping variable.")
@@ -809,7 +906,11 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
                 }
                 st.write("### Test results (structured)")
                 st.table(pd.DataFrame([out]))
-                st.info(interpret_pvalue(p_val, alpha=0.05))  # ANOVA often uses alpha=0.05
+                msg = interpret_pvalue(p_val, alpha=0.05)
+                if p_val < 0.05:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
 
                 st.write("### Boxplot by group")
                 fig, ax = plt.subplots()
@@ -834,6 +935,7 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
 elif analysis_choice == "Categorical association (chi-square)":
     st.header("Chi-Square Test of Independence")
 
+    cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
     if len(cat_vars) < 2:
         st.warning("Need two categorical variables.")
     else:
@@ -855,7 +957,11 @@ elif analysis_choice == "Categorical association (chi-square)":
         }
         st.write("### Test results (structured)")
         st.table(pd.DataFrame([out]))
-        st.info(interpret_pvalue(p, alpha=0.05))
+        msg = interpret_pvalue(p, alpha=0.05)
+        if p < 0.05:
+            st.success(msg)
+        else:
+            st.warning(msg)
 
         summary = f"Chi-square={chi2:.3f}, df={dof}, p-value={p:.4f}"
 
@@ -877,6 +983,7 @@ elif analysis_choice == "Correlation & regression":
     mode = st.radio("Choose", ["Correlation (two numeric variables)", "Regression (simple or multiple)"])
 
     if mode == "Correlation (two numeric variables)":
+        quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
         if len(quant_vars) < 2:
             st.warning("Need at least two quantitative variables.")
         else:
@@ -900,7 +1007,11 @@ elif analysis_choice == "Correlation & regression":
                 }
                 st.write("### Correlation results (structured)")
                 st.table(pd.DataFrame([out]))
-                st.info(interpret_pvalue(p_val, alpha=0.05))
+                msg = interpret_pvalue(p_val, alpha=0.05)
+                if p_val < 0.05:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
 
                 st.write("### Scatterplot with regression line")
                 fig, ax = plt.subplots()
@@ -926,6 +1037,8 @@ elif analysis_choice == "Correlation & regression":
                 st.code(prompt, language="markdown")
 
     else:
+        # Regression
+        quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
         if not quant_vars:
             st.warning("Need at least one quantitative outcome.")
         else:
@@ -933,7 +1046,7 @@ elif analysis_choice == "Correlation & regression":
             predictors = st.multiselect("Predictors (X)", [c for c in data_df.columns if c != dv])
 
             if predictors:
-                # Build safe formula using Q("col") so arbitrary names are allowed
+                # Safe formula using Q("col") so arbitrary names are allowed
                 def q_name(col):
                     safe = str(col).replace('"', '\\"')
                     return f'Q("{safe}")'
@@ -949,7 +1062,6 @@ elif analysis_choice == "Correlation & regression":
 
                 data = data_df[[dv] + predictors].dropna()
 
-                # Coerce numeric variables to numeric
                 for c in [dv] + predictors:
                     if var_types.get(c) == "Quantitative":
                         data[c] = pd.to_numeric(data[c], errors="coerce")
@@ -982,10 +1094,11 @@ elif analysis_choice == "Correlation & regression":
                     st.write("### Model fit (overall)")
                     st.table(pd.DataFrame([overall]))
                     if model.f_pvalue is not None:
-                        st.info(
-                            "Overall model significance: "
-                            + interpret_pvalue(model.f_pvalue, alpha=0.05)
-                        )
+                        msg = interpret_pvalue(model.f_pvalue, alpha=0.05)
+                        if model.f_pvalue < 0.05:
+                            st.success("Overall model significance: " + msg)
+                        else:
+                            st.warning("Overall model significance: " + msg)
 
                     if st.checkbox("Show regression diagnostics (residuals & plots)"):
                         fitted = model.fittedvalues
