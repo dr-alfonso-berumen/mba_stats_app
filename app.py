@@ -11,6 +11,12 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 import textwrap
 
 # -------------------------------------------------------------------
+# Pepperdine colors (web palette)
+# -------------------------------------------------------------------
+PEP_BLUE = "#00205c"
+PEP_ORANGE = "#c25700"
+
+# -------------------------------------------------------------------
 # Helper: build prompt for Gemini (Core, copy-paste)
 # -------------------------------------------------------------------
 def build_prompt(analysis_type: str, context: dict, results: dict) -> str:
@@ -344,16 +350,16 @@ st.sidebar.markdown("---")
 if analysis_choice == "Descriptive statistics":
     st.header("Descriptive Statistics")
 
-    # Optional: overall descriptive table for all quantitative variables
     quant_vars = [c for c in data_df.columns if var_types[c] == "Quantitative"]
     cat_vars = [c for c in data_df.columns if var_types[c] == "Categorical"]
 
     if quant_vars:
         with st.expander("Show descriptive statistics for ALL quantitative variables"):
-            desc_all = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").describe().T
-            desc_all["variance"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").var()
-            desc_all["skewness"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").skew()
-            desc_all["kurtosis"] = data_df[quant_vars].apply(pd.to_numeric, errors="coerce").kurtosis()
+            num_df = data_df[quant_vars].apply(pd.to_numeric, errors="coerce")
+            desc_all = num_df.describe().T
+            desc_all["variance"] = num_df.var()
+            desc_all["skewness"] = num_df.skew()
+            desc_all["kurtosis"] = num_df.kurtosis()
             st.dataframe(desc_all)
 
     target = st.radio("Focus on:", ["One variable", "Two categorical variables (crosstab)"])
@@ -388,14 +394,22 @@ if analysis_choice == "Descriptive statistics":
 
                 st.write("### Histogram")
                 fig, ax = plt.subplots()
-                ax.hist(series, bins="auto")
+                ax.hist(series, bins="auto", color=PEP_BLUE, edgecolor="black")
                 ax.set_xlabel(var)
                 ax.set_ylabel("Frequency")
                 st.pyplot(fig)
 
                 st.write("### Boxplot")
                 fig, ax = plt.subplots()
-                ax.boxplot(series, vert=True)
+                bp = ax.boxplot(series, vert=True, patch_artist=True)
+                for patch in bp['boxes']:
+                    patch.set(facecolor=PEP_ORANGE, edgecolor=PEP_BLUE)
+                for whisker in bp['whiskers']:
+                    whisker.set(color=PEP_BLUE)
+                for cap in bp['caps']:
+                    cap.set(color=PEP_BLUE)
+                for median in bp['medians']:
+                    median.set(color=PEP_BLUE)
                 ax.set_ylabel(var)
                 st.pyplot(fig)
 
@@ -417,7 +431,7 @@ if analysis_choice == "Descriptive statistics":
 
             st.write("### Bar chart")
             fig, ax = plt.subplots()
-            ax.bar(freq.index.astype(str), freq.values)
+            ax.bar(freq.index.astype(str), freq.values, color=PEP_ORANGE, edgecolor=PEP_BLUE)
             ax.set_xlabel(var)
             ax.set_ylabel("Count")
             plt.xticks(rotation=45)
@@ -449,11 +463,14 @@ if analysis_choice == "Descriptive statistics":
             fig, ax = plt.subplots()
             for i, col in enumerate(col_categories):
                 offsets = x + (i - (total_bars - 1) / 2) * width
+                color = PEP_BLUE if i % 2 == 0 else PEP_ORANGE
                 ax.bar(
                     offsets,
                     (row_prop[col].values * 100),
                     width=width,
                     label=str(col),
+                    color=color,
+                    edgecolor="white",
                 )
 
             ax.set_xticks(x)
@@ -482,7 +499,7 @@ elif analysis_choice == "Normal probabilities & critical values":
         ys = norm.pdf(xs, loc=mu, scale=sigma)
 
         fig, ax = plt.subplots()
-        ax.plot(xs, ys)
+        ax.plot(xs, ys, color=PEP_BLUE)
         ax.set_xlabel("X")
         ax.set_ylabel("Density")
         ax.set_title("Normal distribution with shaded probability region")
@@ -502,7 +519,7 @@ elif analysis_choice == "Normal probabilities & critical values":
             else:
                 mask = xs >= x
 
-        ax.fill_between(xs[mask], ys[mask], alpha=0.3)
+        ax.fill_between(xs[mask], ys[mask], alpha=0.3, color=PEP_ORANGE)
         return fig
 
     if mode == "Probability given X":
@@ -578,9 +595,13 @@ elif analysis_choice == "One-sample inference (means/proportions)":
         else:
             dv = st.selectbox("Outcome variable (numeric)", quant_vars)
             data = pd.to_numeric(data_df[dv], errors="coerce").dropna()
-            test_value = st.number_input("Null hypothesis mean (H₀: μ = ?)", value=float(data.mean()) if len(data) > 0 else 0.0)
+            test_value = st.number_input(
+                "Null hypothesis mean (H₀: μ = ?)",
+                value=float(data.mean()) if len(data) > 0 else 0.0
+            )
             sigma_known = st.checkbox("Use z-test (σ known)? Otherwise t-test.", value=False)
-            alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
+            alpha = st.number_input("Significance level α", value=0.05,
+                                    min_value=0.0001, max_value=0.5)
 
             if st.button("Run one-sample test"):
                 n = len(data)
@@ -684,7 +705,8 @@ elif analysis_choice == "One-sample inference (means/proportions)":
         p_hat = x.mean()
         n = x.count()
         p0 = st.number_input("Null proportion (H₀: p = ?)", value=0.5)
-        alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
+        alpha = st.number_input("Significance level α", value=0.05,
+                                min_value=0.0001, max_value=0.5)
 
         if st.button("Run one-sample z-test for proportion"):
             se0 = np.sqrt(p0 * (1 - p0) / n)
@@ -752,7 +774,8 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 se = s_d / np.sqrt(n)
                 df_ = n - 1
                 t_stat = dbar / se
-                alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
+                alpha = st.number_input("Significance level α", value=0.05,
+                                        min_value=0.0001, max_value=0.5)
                 t_crit = stats.t.ppf(1 - alpha / 2, df_)
                 ci_lower = dbar - t_crit * se
                 ci_upper = dbar + t_crit * se
@@ -810,7 +833,8 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 x1 = pd.to_numeric(data[data[iv] == g1][dv], errors="coerce").dropna()
                 x2 = pd.to_numeric(data[data[iv] == g2][dv], errors="coerce").dropna()
                 equal_var = st.checkbox("Assume equal variances", value=True)
-                alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
+                alpha = st.number_input("Significance level α", value=0.05,
+                                        min_value=0.0001, max_value=0.5)
 
                 if len(x1) == 0 or len(x2) == 0:
                     st.error("Not enough numeric data in one or both groups.")
@@ -847,7 +871,11 @@ elif analysis_choice == "Paired or two-sample comparisons":
 
                     st.write("### Boxplot by group")
                     fig, ax = plt.subplots()
-                    ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
+                    bp = ax.boxplot([x1, x2], labels=[str(g1), str(g2)],
+                                    patch_artist=True)
+                    for i, box in enumerate(bp['boxes']):
+                        box.set(facecolor=PEP_ORANGE if i == 1 else PEP_BLUE,
+                                edgecolor="black")
                     ax.set_ylabel(dv)
                     st.pyplot(fig)
 
@@ -914,7 +942,11 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
 
                 st.write("### Boxplot by group")
                 fig, ax = plt.subplots()
-                ax.boxplot(samples, labels=[str(g) for g in groups])
+                bp = ax.boxplot(samples, labels=[str(g) for g in groups],
+                                patch_artist=True)
+                for i, box in enumerate(bp['boxes']):
+                    color = PEP_BLUE if i % 2 == 0 else PEP_ORANGE
+                    box.set(facecolor=color, edgecolor="black")
                 ax.set_ylabel(dv)
                 st.pyplot(fig)
 
@@ -994,8 +1026,12 @@ elif analysis_choice == "Correlation & regression":
             y_num = pd.to_numeric(data[y_var], errors="coerce")
             df_corr = pd.DataFrame({x_var: x_num, y_var: y_num}).dropna()
 
-            if len(df_corr) == 0:
-                st.error("No numeric paired data available for correlation.")
+            # FIX: need at least 2 pairs for Pearson r
+            if len(df_corr) < 2:
+                st.error(
+                    "Need at least 2 non-missing numeric pairs to compute Pearson correlation. "
+                    "Try relaxing your filters or checking for missing data."
+                )
             else:
                 r, p_val = stats.pearsonr(df_corr[x_var], df_corr[y_var])
 
@@ -1015,14 +1051,14 @@ elif analysis_choice == "Correlation & regression":
 
                 st.write("### Scatterplot with regression line")
                 fig, ax = plt.subplots()
-                ax.scatter(df_corr[x_var], df_corr[y_var])
+                ax.scatter(df_corr[x_var], df_corr[y_var], color=PEP_BLUE)
                 ax.set_xlabel(x_var)
                 ax.set_ylabel(y_var)
 
                 slope, intercept = np.polyfit(df_corr[x_var], df_corr[y_var], 1)
                 x_vals = np.linspace(df_corr[x_var].min(), df_corr[x_var].max(), 100)
                 y_vals = intercept + slope * x_vals
-                ax.plot(x_vals, y_vals)
+                ax.plot(x_vals, y_vals, color=PEP_ORANGE, linewidth=2)
                 st.pyplot(fig)
 
                 summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
@@ -1110,15 +1146,15 @@ elif analysis_choice == "Correlation & regression":
 
                         st.write("### Residuals vs Fitted")
                         fig, ax = plt.subplots()
-                        ax.scatter(fitted, resid)
-                        ax.axhline(0, linestyle="--")
+                        ax.scatter(fitted, resid, color=PEP_BLUE)
+                        ax.axhline(0, linestyle="--", color=PEP_ORANGE)
                         ax.set_xlabel("Fitted values")
                         ax.set_ylabel("Residuals")
                         st.pyplot(fig)
 
                         st.write("### Histogram of residuals")
                         fig, ax = plt.subplots()
-                        ax.hist(resid, bins="auto")
+                        ax.hist(resid, bins="auto", color=PEP_BLUE, edgecolor="black")
                         ax.set_xlabel("Residual")
                         ax.set_ylabel("Frequency")
                         st.pyplot(fig)
