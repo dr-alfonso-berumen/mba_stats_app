@@ -326,6 +326,36 @@ with st.expander("Explore & filter data"):
 # Use filtered data for all subsequent analyses
 data_df = filtered_df.copy()
 
+# 2c. Missing data summary and options
+with st.expander("Missing data summary (after filtering)"):
+    if len(data_df) == 0:
+        st.info("No rows remaining after filtering.")
+    else:
+        miss_counts = data_df.isna().sum()
+        miss_pct = (miss_counts / len(data_df) * 100).round(2)
+        miss_df = pd.DataFrame(
+            {
+                "Missing count": miss_counts,
+                "Missing %": miss_pct,
+            }
+        )
+        st.dataframe(miss_df)
+
+st.sidebar.subheader("Missing data options")
+missing_mode = st.sidebar.selectbox(
+    "How should missing values be handled in analyses?",
+    [
+        "Drop only rows with missing values in variables used in each test (recommended)",
+        "Drop rows with missing values in any selected column (listwise across all selected columns)",
+    ],
+)
+
+if missing_mode == "Drop rows with missing values in any selected column (listwise across all selected columns)":
+    data_df = data_df.dropna()
+    st.caption(
+        f"After listwise deletion across all selected columns, {len(data_df)} rows remain for analysis."
+    )
+
 st.sidebar.markdown("---")
 
 # 3. Main analysis choice
@@ -338,8 +368,8 @@ analysis_choice = st.sidebar.selectbox(
         "Paired or two-sample comparisons",
         "ANOVA (compare 3+ group means)",
         "Categorical association (chi-square)",
-        "Correlation & regression"
-    ]
+        "Correlation & regression",
+    ],
 )
 
 st.sidebar.markdown("---")
@@ -380,6 +410,8 @@ if analysis_choice == "Descriptive statistics":
             if len(series) == 0:
                 st.warning("No numeric data available for this variable.")
             else:
+                st.caption(f"Records used in this analysis: n = {len(series)}")
+
                 st.write("### Detailed summary statistics")
                 desc = series.describe()
                 extra = pd.Series(
@@ -402,13 +434,13 @@ if analysis_choice == "Descriptive statistics":
                 st.write("### Boxplot")
                 fig, ax = plt.subplots()
                 bp = ax.boxplot(series, vert=True, patch_artist=True)
-                for patch in bp['boxes']:
+                for patch in bp["boxes"]:
                     patch.set(facecolor=PEP_ORANGE, edgecolor=PEP_BLUE)
-                for whisker in bp['whiskers']:
+                for whisker in bp["whiskers"]:
                     whisker.set(color=PEP_BLUE)
-                for cap in bp['caps']:
+                for cap in bp["caps"]:
                     cap.set(color=PEP_BLUE)
-                for median in bp['medians']:
+                for median in bp["medians"]:
                     median.set(color=PEP_BLUE)
                 ax.set_ylabel(var)
                 st.pyplot(fig)
@@ -422,20 +454,25 @@ if analysis_choice == "Descriptive statistics":
 
         else:
             series = series_raw.dropna()
-            st.write("### Frequency table (counts)")
-            freq = series.value_counts()
-            st.dataframe(freq.to_frame("Count"))
+            if len(series) == 0:
+                st.warning("No non-missing data available for this variable.")
+            else:
+                st.caption(f"Records used in this analysis: n = {len(series)}")
 
-            st.write("### Proportions")
-            st.dataframe((freq / freq.sum()).to_frame("Proportion"))
+                st.write("### Frequency table (counts)")
+                freq = series.value_counts()
+                st.dataframe(freq.to_frame("Count"))
 
-            st.write("### Bar chart")
-            fig, ax = plt.subplots()
-            ax.bar(freq.index.astype(str), freq.values, color=PEP_ORANGE, edgecolor=PEP_BLUE)
-            ax.set_xlabel(var)
-            ax.set_ylabel("Count")
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
+                st.write("### Proportions")
+                st.dataframe((freq / freq.sum()).to_frame("Proportion"))
+
+                st.write("### Bar chart")
+                fig, ax = plt.subplots()
+                ax.bar(freq.index.astype(str), freq.values, color=PEP_ORANGE, edgecolor=PEP_BLUE)
+                ax.set_xlabel(var)
+                ax.set_ylabel("Count")
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
 
     else:
         if len(cat_vars) < 2:
@@ -444,41 +481,47 @@ if analysis_choice == "Descriptive statistics":
             c1 = st.selectbox("Row variable", cat_vars)
             c2 = st.selectbox("Column variable", [c for c in cat_vars if c != c1])
             data = data_df[[c1, c2]].dropna()
-            ct = pd.crosstab(data[c1], data[c2])
 
-            st.write("### Crosstab (counts)")
-            st.dataframe(ct)
+            if len(data) == 0:
+                st.warning("No complete data for these two variables.")
+            else:
+                st.caption(f"Records used in this analysis: n = {len(data)}")
 
-            row_prop = ct.div(ct.sum(axis=1), axis=0)
-            st.write("### Row percentages")
-            st.dataframe((row_prop * 100).round(2))
+                ct = pd.crosstab(data[c1], data[c2])
 
-            st.write("### Clustered bar chart (row % by column category)")
-            row_categories = row_prop.index.astype(str)
-            col_categories = row_prop.columns.astype(str)
-            x = np.arange(len(row_categories))
-            total_bars = len(col_categories)
-            width = 0.8 / max(total_bars, 1)
+                st.write("### Crosstab (counts)")
+                st.dataframe(ct)
 
-            fig, ax = plt.subplots()
-            for i, col in enumerate(col_categories):
-                offsets = x + (i - (total_bars - 1) / 2) * width
-                color = PEP_BLUE if i % 2 == 0 else PEP_ORANGE
-                ax.bar(
-                    offsets,
-                    (row_prop[col].values * 100),
-                    width=width,
-                    label=str(col),
-                    color=color,
-                    edgecolor="white",
-                )
+                row_prop = ct.div(ct.sum(axis=1), axis=0)
+                st.write("### Row percentages")
+                st.dataframe((row_prop * 100).round(2))
 
-            ax.set_xticks(x)
-            ax.set_xticklabels(row_categories, rotation=45)
-            ax.set_ylabel("Row percentage (%)")
-            ax.set_xlabel(c1)
-            ax.legend(title=c2)
-            st.pyplot(fig)
+                st.write("### Clustered bar chart (row % by column category)")
+                row_categories = row_prop.index.astype(str)
+                col_categories = row_prop.columns.astype(str)
+                x = np.arange(len(row_categories))
+                total_bars = len(col_categories)
+                width = 0.8 / max(total_bars, 1)
+
+                fig, ax = plt.subplots()
+                for i, col in enumerate(col_categories):
+                    offsets = x + (i - (total_bars - 1) / 2) * width
+                    color = PEP_BLUE if i % 2 == 0 else PEP_ORANGE
+                    ax.bar(
+                        offsets,
+                        (row_prop[col].values * 100),
+                        width=width,
+                        label=str(col),
+                        color=color,
+                        edgecolor="white",
+                    )
+
+                ax.set_xticks(x)
+                ax.set_xticklabels(row_categories, rotation=45)
+                ax.set_ylabel("Row percentage (%)")
+                ax.set_xlabel(c1)
+                ax.legend(title=c2)
+                st.pyplot(fig)
 
 # -------------------------------------------------------------------
 # B. Normal probabilities & critical values (with curve + shaded area)
@@ -549,7 +592,7 @@ elif analysis_choice == "Normal probabilities & critical values":
             results = {"summary": f"mu={mu}, sigma={sigma}, type={prob_type}, probability={p:.4f}"}
             context = {
                 "description": "Evaluate a normal probability for a business-related metric.",
-                "variables": f"X ~ Normal({mu}, {sigma}^2)."
+                "variables": f"X ~ Normal({mu}, {sigma}^2).",
             }
             prompt = build_prompt("normal probability calculation", context, results)
             st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -574,7 +617,7 @@ elif analysis_choice == "Normal probabilities & critical values":
             results = {"summary": f"mu={mu}, sigma={sigma}, tail={prob_type}, p={p}, x={x:.4f}"}
             context = {
                 "description": "Find a critical value on a normal distribution for a business threshold.",
-                "variables": f"X ~ Normal({mu}, {sigma}^2)."
+                "variables": f"X ~ Normal({mu}, {sigma}^2).",
             }
             prompt = build_prompt("normal critical value", context, results)
             st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -595,13 +638,16 @@ elif analysis_choice == "One-sample inference (means/proportions)":
         else:
             dv = st.selectbox("Outcome variable (numeric)", quant_vars)
             data = pd.to_numeric(data_df[dv], errors="coerce").dropna()
+            st.caption(f"Records used in this analysis: n = {len(data)}")
+
             test_value = st.number_input(
                 "Null hypothesis mean (H₀: μ = ?)",
-                value=float(data.mean()) if len(data) > 0 else 0.0
+                value=float(data.mean()) if len(data) > 0 else 0.0,
             )
             sigma_known = st.checkbox("Use z-test (σ known)? Otherwise t-test.", value=False)
-            alpha = st.number_input("Significance level α", value=0.05,
-                                    min_value=0.0001, max_value=0.5)
+            alpha = st.number_input(
+                "Significance level α", value=0.05, min_value=0.0001, max_value=0.5
+            )
 
             if st.button("Run one-sample test"):
                 n = len(data)
@@ -642,12 +688,12 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, σ={sigma:.3f}, "
                             f"z={z_stat:.3f}, p={p_val:.4f}, "
-                            f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                            f"{100 * (1 - alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                         )
                         results = {"summary": summary}
                         context = {
                             "description": "Test whether a sample mean differs from a hypothesized population mean using a z-test.",
-                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
+                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}.",
                         }
                         prompt = build_prompt("one-sample z-test for a mean", context, results)
 
@@ -678,12 +724,12 @@ elif analysis_choice == "One-sample inference (means/proportions)":
 
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, s={s:.3f}, t({df_})={t_stat:.3f}, p={p_val:.4f}, "
-                            f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                            f"{100 * (1 - alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                         )
                         results = {"summary": summary}
                         context = {
                             "description": "Test whether a sample mean differs from a hypothesized population mean using a t-test.",
-                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}."
+                            "variables": f"Outcome variable: {dv}. Null mean: {test_value}.",
                         }
                         prompt = build_prompt("one-sample t-test for a mean", context, results)
 
@@ -704,9 +750,12 @@ elif analysis_choice == "One-sample inference (means/proportions)":
             x = data.map(mapping)
         p_hat = x.mean()
         n = x.count()
+        st.caption(f"Records used in this analysis: n = {n}")
+
         p0 = st.number_input("Null proportion (H₀: p = ?)", value=0.5)
-        alpha = st.number_input("Significance level α", value=0.05,
-                                min_value=0.0001, max_value=0.5)
+        alpha = st.number_input(
+            "Significance level α", value=0.05, min_value=0.0001, max_value=0.5
+        )
 
         if st.button("Run one-sample z-test for proportion"):
             se0 = np.sqrt(p0 * (1 - p0) / n)
@@ -735,13 +784,13 @@ elif analysis_choice == "One-sample inference (means/proportions)":
 
             summary = (
                 f"n={n}, p̂={p_hat:.3f}, p0={p0:.3f}, z={z_stat:.3f}, p={p_val:.4f}, "
-                f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                f"{100 * (1 - alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
             )
 
             results = {"summary": summary}
             context = {
                 "description": "Test whether the true proportion differs from a hypothesized proportion.",
-                "variables": f"Binary variable: {var}. Null proportion: {p0}."
+                "variables": f"Binary variable: {var}. Null proportion: {p0}.",
             }
             prompt = build_prompt("one-sample z-test for a proportion", context, results)
             st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -763,9 +812,14 @@ elif analysis_choice == "Paired or two-sample comparisons":
             v1 = st.selectbox("First measure (e.g., Before)", quant_vars)
             v2 = st.selectbox("Second measure (e.g., After)", [v for v in quant_vars if v != v1])
             data = data_df[[v1, v2]].dropna()
-            diff = pd.to_numeric(data[v2], errors="coerce") - pd.to_numeric(data[v1], errors="coerce")
+            diff = (
+                pd.to_numeric(data[v2], errors="coerce")
+                - pd.to_numeric(data[v1], errors="coerce")
+            )
             diff = diff.dropna()
             n = len(diff)
+            st.caption(f"Records used in this analysis: n = {n}")
+
             if n == 0:
                 st.error("No numeric paired data available.")
             else:
@@ -774,8 +828,9 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 se = s_d / np.sqrt(n)
                 df_ = n - 1
                 t_stat = dbar / se
-                alpha = st.number_input("Significance level α", value=0.05,
-                                        min_value=0.0001, max_value=0.5)
+                alpha = st.number_input(
+                    "Significance level α", value=0.05, min_value=0.0001, max_value=0.5
+                )
                 t_crit = stats.t.ppf(1 - alpha / 2, df_)
                 ci_lower = dbar - t_crit * se
                 ci_upper = dbar + t_crit * se
@@ -804,13 +859,13 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 summary = (
                     f"n={n}, mean difference={dbar:.3f}, sd_diff={s_d:.3f}, "
                     f"t({df_})={t_stat:.3f}, p={p_val:.4f}, "
-                    f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                    f"{100 * (1 - alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                 )
 
                 results = {"summary": summary}
                 context = {
                     "description": "Compare before/after or matched pairs using a paired t-test.",
-                    "variables": f"Before: {v1}, After: {v2}."
+                    "variables": f"Before: {v1}, After: {v2}.",
                 }
                 prompt = build_prompt("paired t-test", context, results)
                 st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -829,31 +884,40 @@ elif analysis_choice == "Paired or two-sample comparisons":
             if len(groups) != 2:
                 st.warning("Grouping variable must have exactly 2 groups.")
             else:
+                st.caption(f"Records used in this analysis: n = {len(data)}")
+
                 g1, g2 = groups[0], groups[1]
                 x1 = pd.to_numeric(data[data[iv] == g1][dv], errors="coerce").dropna()
                 x2 = pd.to_numeric(data[data[iv] == g2][dv], errors="coerce").dropna()
                 equal_var = st.checkbox("Assume equal variances", value=True)
-                alpha = st.number_input("Significance level α", value=0.05,
-                                        min_value=0.0001, max_value=0.5)
+                alpha = st.number_input(
+                    "Significance level α", value=0.05, min_value=0.0001, max_value=0.5
+                )
 
                 if len(x1) == 0 or len(x2) == 0:
                     st.error("Not enough numeric data in one or both groups.")
                 else:
                     t_stat, p_val = stats.ttest_ind(x1, x2, equal_var=equal_var)
-                    diff, (ci_lower, ci_upper), se, df_ = ci_diff_means_welch(x1, x2, alpha=alpha)
+                    diff, (ci_lower, ci_upper), se, df_ = ci_diff_means_welch(
+                        x1, x2, alpha=alpha
+                    )
 
                     st.write("### Group summaries")
-                    desc = pd.DataFrame({
-                        "group": [g1, g2],
-                        "n": [len(x1), len(x2)],
-                        "mean": [x1.mean(), x2.mean()],
-                        "sd": [x1.std(ddof=1), x2.std(ddof=1)],
-                    })
+                    desc = pd.DataFrame(
+                        {
+                            "group": [g1, g2],
+                            "n": [len(x1), len(x2)],
+                            "mean": [x1.mean(), x2.mean()],
+                            "sd": [x1.std(ddof=1), x2.std(ddof=1)],
+                        }
+                    )
                     st.table(desc)
 
                     out = {
                         "Test": "Independent two-sample t-test",
                         "df (Welch)": round(df_, 1),
+                        "n1": len(x1),
+                        "n2": len(x2),
                         "mean1 - mean2": round(diff, 3),
                         "t": round(t_stat, 3),
                         "p-value": round(p_val, 4),
@@ -871,11 +935,12 @@ elif analysis_choice == "Paired or two-sample comparisons":
 
                     st.write("### Boxplot by group")
                     fig, ax = plt.subplots()
-                    bp = ax.boxplot([x1, x2], labels=[str(g1), str(g2)],
-                                    patch_artist=True)
-                    for i, box in enumerate(bp['boxes']):
-                        box.set(facecolor=PEP_ORANGE if i == 1 else PEP_BLUE,
-                                edgecolor="black")
+                    bp = ax.boxplot([x1, x2], labels=[str(g1), str(g2)], patch_artist=True)
+                    for i, box in enumerate(bp["boxes"]):
+                        box.set(
+                            facecolor=PEP_ORANGE if i == 1 else PEP_BLUE,
+                            edgecolor="black",
+                        )
                     ax.set_ylabel(dv)
                     st.pyplot(fig)
 
@@ -883,13 +948,13 @@ elif analysis_choice == "Paired or two-sample comparisons":
                         f"Group 1 ({g1}): n={len(x1)}, mean={x1.mean():.3f}, sd={x1.std(ddof=1):.3f}\n"
                         f"Group 2 ({g2}): n={len(x2)}, mean={x2.mean():.3f}, sd={x2.std(ddof=1):.3f}\n"
                         f"Difference (mean1 - mean2)={diff:.3f}, t({df_:.1f})={t_stat:.3f}, p={p_val:.4f}, "
-                        f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
+                        f"{100 * (1 - alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                     )
 
                     results = {"summary": summary}
                     context = {
                         "description": "Compare the average outcome between two independent groups using a two-sample t-test.",
-                        "variables": f"Outcome: {dv}. Grouping: {iv} with levels {g1} and {g2}."
+                        "variables": f"Outcome: {dv}. Grouping: {iv} with levels {g1} and {g2}.",
                     }
                     prompt = build_prompt("two-sample t-test", context, results)
                     st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -911,12 +976,16 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
         iv = st.selectbox("Grouping variable (category)", cat_vars)
         data = data_df[[dv, iv]].dropna()
         groups = data[iv].unique()
+
         if len(groups) < 3:
             st.warning("ANOVA requires at least 3 groups.")
+        elif len(data) == 0:
+            st.warning("No complete data for these variables.")
         else:
+            st.caption(f"Records used in this analysis: n = {len(data)}")
+
             samples = [
-                pd.to_numeric(data[data[iv] == g][dv], errors="coerce").dropna()
-                for g in groups
+                pd.to_numeric(data[data[iv] == g][dv], errors="coerce").dropna() for g in groups
             ]
             if any(len(s) == 0 for s in samples):
                 st.error("One or more groups have no numeric data.")
@@ -942,9 +1011,8 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
 
                 st.write("### Boxplot by group")
                 fig, ax = plt.subplots()
-                bp = ax.boxplot(samples, labels=[str(g) for g in groups],
-                                patch_artist=True)
-                for i, box in enumerate(bp['boxes']):
+                bp = ax.boxplot(samples, labels=[str(g) for g in groups], patch_artist=True)
+                for i, box in enumerate(bp["boxes"]):
                     color = PEP_BLUE if i % 2 == 0 else PEP_ORANGE
                     box.set(facecolor=color, edgecolor="black")
                 ax.set_ylabel(dv)
@@ -955,7 +1023,7 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
                 results = {"summary": summary + "\n" + desc.to_string()}
                 context = {
                     "description": "Compare mean outcomes across multiple groups using one-way ANOVA.",
-                    "variables": f"Outcome: {dv}. Grouping variable: {iv} with groups {list(groups)}."
+                    "variables": f"Outcome: {dv}. Grouping variable: {iv} with groups {list(groups)}.",
                 }
                 prompt = build_prompt("one-way ANOVA", context, results)
                 st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -974,37 +1042,43 @@ elif analysis_choice == "Categorical association (chi-square)":
         c1 = st.selectbox("First categorical variable", cat_vars)
         c2 = st.selectbox("Second categorical variable", [c for c in cat_vars if c != c1])
         data = data_df[[c1, c2]].dropna()
-        contingency = pd.crosstab(data[c1], data[c2])
 
-        st.write("### Contingency table (counts)")
-        st.dataframe(contingency)
-
-        chi2, p, dof, expected = stats.chi2_contingency(contingency)
-
-        out = {
-            "Test": "Chi-square test of independence",
-            "Chi-square": round(chi2, 3),
-            "df": dof,
-            "p-value": round(p, 4),
-        }
-        st.write("### Test results (structured)")
-        st.table(pd.DataFrame([out]))
-        msg = interpret_pvalue(p, alpha=0.05)
-        if p < 0.05:
-            st.success(msg)
+        if len(data) == 0:
+            st.warning("No complete data for these two variables.")
         else:
-            st.warning(msg)
+            st.caption(f"Records used in this analysis: n = {len(data)}")
 
-        summary = f"Chi-square={chi2:.3f}, df={dof}, p-value={p:.4f}"
+            contingency = pd.crosstab(data[c1], data[c2])
 
-        results = {"summary": summary + "\nObserved:\n" + contingency.to_string()}
-        context = {
-            "description": "Assess whether two categorical variables are associated using a chi-square test of independence.",
-            "variables": f"Categorical variables: {c1} and {c2}."
-        }
-        prompt = build_prompt("chi-square test of independence", context, results)
-        st.subheader("Optional: AI Explanation Prompt (Gemini)")
-        st.code(prompt, language="markdown")
+            st.write("### Contingency table (counts)")
+            st.dataframe(contingency)
+
+            chi2, p, dof, expected = stats.chi2_contingency(contingency)
+
+            out = {
+                "Test": "Chi-square test of independence",
+                "Chi-square": round(chi2, 3),
+                "df": dof,
+                "p-value": round(p, 4),
+            }
+            st.write("### Test results (structured)")
+            st.table(pd.DataFrame([out]))
+            msg = interpret_pvalue(p, alpha=0.05)
+            if p < 0.05:
+                st.success(msg)
+            else:
+                st.warning(msg)
+
+            summary = f"Chi-square={chi2:.3f}, df={dof}, p-value={p:.4f}"
+
+            results = {"summary": summary + "\nObserved:\n" + contingency.to_string()}
+            context = {
+                "description": "Assess whether two categorical variables are associated using a chi-square test of independence.",
+                "variables": f"Categorical variables: {c1} and {c2}.",
+            }
+            prompt = build_prompt("chi-square test of independence", context, results)
+            st.subheader("Optional: AI Explanation Prompt (Gemini)")
+            st.code(prompt, language="markdown")
 
 # -------------------------------------------------------------------
 # G. Correlation & regression
@@ -1026,13 +1100,14 @@ elif analysis_choice == "Correlation & regression":
             y_num = pd.to_numeric(data[y_var], errors="coerce")
             df_corr = pd.DataFrame({x_var: x_num, y_var: y_num}).dropna()
 
-            # FIX: need at least 2 pairs for Pearson r
             if len(df_corr) < 2:
                 st.error(
                     "Need at least 2 non-missing numeric pairs to compute Pearson correlation. "
                     "Try relaxing your filters or checking for missing data."
                 )
             else:
+                st.caption(f"Records used in this analysis: n = {len(df_corr)}")
+
                 r, p_val = stats.pearsonr(df_corr[x_var], df_corr[y_var])
 
                 out = {
@@ -1066,7 +1141,7 @@ elif analysis_choice == "Correlation & regression":
                 results = {"summary": summary}
                 context = {
                     "description": "Measure the strength and direction of the linear relationship between two quantitative variables.",
-                    "variables": f"X: {x_var}, Y: {y_var}."
+                    "variables": f"X: {x_var}, Y: {y_var}.",
                 }
                 prompt = build_prompt("Pearson correlation", context, results)
                 st.subheader("Optional: AI Explanation Prompt (Gemini)")
@@ -1079,7 +1154,9 @@ elif analysis_choice == "Correlation & regression":
             st.warning("Need at least one quantitative outcome.")
         else:
             dv = st.selectbox("Outcome (Y, numeric)", quant_vars)
-            predictors = st.multiselect("Predictors (X)", [c for c in data_df.columns if c != dv])
+            predictors = st.multiselect(
+                "Predictors (X)", [c for c in data_df.columns if c != dv]
+            )
 
             if predictors:
                 # Safe formula using Q("col") so arbitrary names are allowed
@@ -1106,6 +1183,8 @@ elif analysis_choice == "Correlation & regression":
                 if len(data) == 0:
                     st.error("No complete numeric data for regression.")
                 else:
+                    st.caption(f"Records used in this analysis: n = {len(data)}")
+
                     model = smf.ols(formula, data=data).fit()
 
                     st.write("### Regression formula")
@@ -1114,18 +1193,21 @@ elif analysis_choice == "Correlation & regression":
                     st.write("### Coefficients with confidence intervals")
                     coef = model.params
                     conf = model.conf_int()
-                    coef_df = pd.DataFrame({
-                        "Estimate": coef,
-                        "CI Lower": conf[0],
-                        "CI Upper": conf[1]
-                    })
+                    coef_df = pd.DataFrame(
+                        {"Estimate": coef, "CI Lower": conf[0], "CI Upper": conf[1]}
+                    )
                     st.dataframe(coef_df)
 
                     overall = {
+                        "n": len(data),
                         "R-squared": round(model.rsquared, 3),
                         "Adj R-squared": round(model.rsquared_adj, 3),
-                        "F-statistic": round(model.fvalue, 3) if model.fvalue is not None else None,
-                        "F p-value": round(model.f_pvalue, 4) if model.f_pvalue is not None else None,
+                        "F-statistic": round(model.fvalue, 3)
+                        if model.fvalue is not None
+                        else None,
+                        "F p-value": round(model.f_pvalue, 4)
+                        if model.f_pvalue is not None
+                        else None,
                     }
                     st.write("### Model fit (overall)")
                     st.table(pd.DataFrame([overall]))
@@ -1161,10 +1243,14 @@ elif analysis_choice == "Correlation & regression":
 
                         st.write("### QQ plot of residuals")
                         if len(resid) >= 3:
-                            fig = sm.ProbPlot(resid, dist=stats.norm, fit=True).qqplot(line="45")
+                            fig = sm.ProbPlot(resid, dist=stats.norm, fit=True).qqplot(
+                                line="45"
+                            )
                             st.pyplot(fig)
                         else:
-                            st.info("Not enough residuals to make a QQ plot (need at least 3).")
+                            st.info(
+                                "Not enough residuals to make a QQ plot (need at least 3)."
+                            )
 
                     if st.checkbox("Show multicollinearity diagnostics (VIF)"):
                         vif_df = compute_vif(data, predictors, var_types)
@@ -1176,32 +1262,47 @@ elif analysis_choice == "Correlation & regression":
                     for p in predictors:
                         if var_types[p] == "Quantitative":
                             default_val = float(data[p].mean())
-                            user_inputs[p] = st.number_input(f"Value for {p}", value=default_val)
+                            user_inputs[p] = st.number_input(
+                                f"Value for {p}", value=default_val
+                            )
                         else:
                             levels = data[p].unique()
-                            user_inputs[p] = st.selectbox(f"Category for {p}", options=levels)
+                            user_inputs[p] = st.selectbox(
+                                f"Category for {p}", options=levels
+                            )
 
                     alpha = st.number_input(
                         "Significance level α for intervals",
                         value=0.05,
                         min_value=0.0001,
-                        max_value=0.5
+                        max_value=0.5,
                     )
 
                     if st.button("Compute prediction and intervals"):
                         new_df = pd.DataFrame([user_inputs])
-                        pred_frame = regression_prediction_with_intervals(model, new_df, alpha=alpha)
-                        st.dataframe(pred_frame[["mean", "mean_ci_lower", "mean_ci_upper",
-                                                 "obs_ci_lower", "obs_ci_upper"]])
+                        pred_frame = regression_prediction_with_intervals(
+                            model, new_df, alpha=alpha
+                        )
+                        st.dataframe(
+                            pred_frame[
+                                [
+                                    "mean",
+                                    "mean_ci_lower",
+                                    "mean_ci_upper",
+                                    "obs_ci_lower",
+                                    "obs_ci_upper",
+                                ]
+                            ]
+                        )
 
                         summary = (
                             f"R-squared={model.rsquared:.3f}, Adj R-squared={model.rsquared_adj:.3f}\n"
                             f"Coefficients:\n{model.params.to_string()}\n\n"
                             f"Prediction at X={user_inputs}:\n"
                             f"Predicted mean={pred_frame['mean'].iloc[0]:.3f}, "
-                            f"{100*(1-alpha):.1f}% CI for mean=({pred_frame['mean_ci_lower'].iloc[0]:.3f}, "
+                            f"{100 * (1 - alpha):.1f}% CI for mean=({pred_frame['mean_ci_lower'].iloc[0]:.3f}, "
                             f"{pred_frame['mean_ci_upper'].iloc[0]:.3f}), "
-                            f"{100*(1-alpha):.1f}% prediction interval=({pred_frame['obs_ci_lower'].iloc[0]:.3f}, "
+                            f"{100 * (1 - alpha):.1f}% prediction interval=({pred_frame['obs_ci_lower'].iloc[0]:.3f}, "
                             f"{pred_frame['obs_ci_upper'].iloc[0]:.3f})"
                         )
 
@@ -1210,8 +1311,12 @@ elif analysis_choice == "Correlation & regression":
                         results = {"summary": summary}
                         context = {
                             "description": "Use a regression model to predict the outcome for a specific business scenario and interpret the strength and uncertainty of the prediction.",
-                            "variables": f"Outcome: {dv}. Predictors: {predictors}."
+                            "variables": f"Outcome: {dv}. Predictors: {predictors}.",
                         }
-                        prompt = build_prompt("linear regression with prediction and diagnostics", context, results)
+                        prompt = build_prompt(
+                            "linear regression with prediction and diagnostics",
+                            context,
+                            results,
+                        )
                         st.subheader("Optional: AI Explanation Prompt (Gemini)")
                         st.code(prompt, language="markdown")
