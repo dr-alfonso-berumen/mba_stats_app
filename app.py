@@ -1,6 +1,3 @@
-# mba_stats_app
-# Learn Business Statistics
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -86,7 +83,7 @@ def ci_proportion(phat, n, alpha=0.05):
 def regression_prediction_with_intervals(model, new_df, alpha=0.05):
     pred_res = model.get_prediction(new_df)
     frame = pred_res.summary_frame(alpha=alpha)
-    return frame  # has mean, mean_ci_lower, mean_ci_upper, obs_ci_lower, obs_ci_upper
+    return frame  # mean, mean_ci_lower, mean_ci_upper, obs_ci_lower, obs_ci_upper
 
 
 def compute_vif(data, predictors, var_types):
@@ -118,7 +115,7 @@ def compute_vif(data, predictors, var_types):
 st.set_page_config(page_title="MBA Stats Lab", layout="wide")
 st.title("MBA Stats Lab: Spreadsheet + Drop-Down Analysis")
 
-# 1. Upload data
+# 1. Upload data (no headers yet)
 st.sidebar.header("Step 1: Upload Data")
 uploaded_file = st.sidebar.file_uploader("Upload Excel or CSV", type=["xlsx", "csv"])
 
@@ -126,12 +123,54 @@ if uploaded_file is None:
     st.info("Upload a spreadsheet to get started.")
     st.stop()
 
+# Read raw file with NO header so user can choose header row and data start row
 if uploaded_file.name.endswith(".csv"):
-    df = pd.read_csv(uploaded_file)
+    raw_df = pd.read_csv(uploaded_file, header=None)
 else:
-    df = pd.read_excel(uploaded_file)
+    raw_df = pd.read_excel(uploaded_file, header=None)
 
-st.subheader("Data Preview")
+st.subheader("Raw file preview (first 15 rows)")
+st.caption("Row numbers on the left will help you choose the header and data start rows.")
+st.dataframe(raw_df.head(15))
+
+# Header & data row settings
+st.sidebar.subheader("Header & Data Row Settings")
+max_row = len(raw_df)
+
+if max_row < 2:
+    st.error("The file must have at least 2 rows (one for header, one for data).")
+    st.stop()
+
+max_header_row = max_row - 1
+
+header_row = st.sidebar.number_input(
+    "Row that contains column names (1 = first row)",
+    min_value=1,
+    max_value=max_header_row,
+    value=1,
+    step=1,
+)
+
+min_data_start = header_row + 1
+data_start_row = st.sidebar.number_input(
+    "Row where data starts (1-based)",
+    min_value=min_data_start,
+    max_value=max_row,
+    value=min_data_start,
+    step=1,
+)
+
+# Convert to 0-based indexes
+header_idx = int(header_row - 1)
+data_start_idx = int(data_start_row - 1)
+
+# Build clean df: use chosen header row as column names, drop rows above data_start
+header = raw_df.iloc[header_idx].astype(str)
+df = raw_df.iloc[data_start_idx:].copy()
+df.columns = header
+df.reset_index(drop=True, inplace=True)
+
+st.subheader("Processed data (this is what the analysis will use)")
 edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
 # 2. Variable types
@@ -197,7 +236,7 @@ if analysis_choice == "Descriptive statistics":
             ax.set_ylabel(var)
             st.pyplot(fig)
 
-            # QQ plot for normality
+            # QQ plot
             st.write("### QQ plot (Normality check)")
             fig = sm.ProbPlot(series, dist=stats.norm, fit=True).qqplot(line="45")
             st.pyplot(fig)
@@ -274,7 +313,6 @@ elif analysis_choice == "Normal probabilities & critical values":
                 p = norm.cdf(b, loc=mu, scale=sigma) - norm.cdf(a, loc=mu, scale=sigma)
                 st.write(f"P({a} ≤ X ≤ {b}) = {p:.4f}")
 
-            # Prompt
             results = {"summary": f"mu={mu}, sigma={sigma}, type={prob_type}, probability={p:.4f}"}
             context = {
                 "description": "Evaluate a normal probability for a business-related metric.",
@@ -371,7 +409,6 @@ elif analysis_choice == "One-sample inference (means/proportions)":
     else:  # Proportion (z)
         var = st.selectbox("Binary outcome variable", edited_df.columns)
         data = edited_df[var].dropna()
-        # Convert to 0/1
         if data.dtype == "bool":
             x = data.astype(int)
         else:
@@ -482,7 +519,6 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 )
                 st.text(summary)
 
-                # Boxplot by group
                 st.write("### Boxplot by group")
                 fig, ax = plt.subplots()
                 ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
@@ -525,7 +561,6 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
             st.write("### ANOVA result")
             st.write(summary)
 
-            # Boxplot of groups
             st.write("### Boxplot by group")
             fig, ax = plt.subplots()
             ax.boxplot(samples, labels=[str(g) for g in groups])
@@ -592,14 +627,12 @@ elif analysis_choice == "Correlation & regression":
             summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
             st.write(summary)
 
-            # Scatterplot
-            st.write("### Scatterplot")
+            st.write("### Scatterplot with regression line")
             fig, ax = plt.subplots()
             ax.scatter(data[x_var], data[y_var])
             ax.set_xlabel(x_var)
             ax.set_ylabel(y_var)
 
-            # regression line
             slope, intercept = np.polyfit(data[x_var], data[y_var], 1)
             x_vals = np.linspace(data[x_var].min(), data[x_var].max(), 100)
             y_vals = intercept + slope * x_vals
@@ -623,7 +656,6 @@ elif analysis_choice == "Correlation & regression":
             predictors = st.multiselect("Predictors (X)", [c for c in edited_df.columns if c != dv])
 
             if predictors:
-                # Build formula with categorical predictors handled via C()
                 terms = []
                 for p in predictors:
                     if var_types[p] == "Categorical":
@@ -638,7 +670,6 @@ elif analysis_choice == "Correlation & regression":
                 st.write("### Regression formula")
                 st.code(formula)
 
-                # Coefficients + CIs
                 st.write("### Coefficients with confidence intervals")
                 coef = model.params
                 conf = model.conf_int()
@@ -651,7 +682,6 @@ elif analysis_choice == "Correlation & regression":
 
                 st.write(f"R-squared={model.rsquared:.3f}, Adjusted R-squared={model.rsquared_adj:.3f}")
 
-                # Diagnostics
                 if st.checkbox("Show regression diagnostics (residuals & plots)"):
                     fitted = model.fittedvalues
                     resid = model.resid
@@ -660,7 +690,6 @@ elif analysis_choice == "Correlation & regression":
                     st.write("### Residuals (first 50)")
                     st.dataframe(diag_df.head(50))
 
-                    # Residual vs fitted
                     st.write("### Residuals vs Fitted")
                     fig, ax = plt.subplots()
                     ax.scatter(fitted, resid)
@@ -669,7 +698,6 @@ elif analysis_choice == "Correlation & regression":
                     ax.set_ylabel("Residuals")
                     st.pyplot(fig)
 
-                    # Histogram of residuals
                     st.write("### Histogram of residuals")
                     fig, ax = plt.subplots()
                     ax.hist(resid, bins="auto")
@@ -677,18 +705,15 @@ elif analysis_choice == "Correlation & regression":
                     ax.set_ylabel("Frequency")
                     st.pyplot(fig)
 
-                    # QQ plot
                     st.write("### QQ plot of residuals")
                     fig = sm.ProbPlot(resid, dist=stats.norm, fit=True).qqplot(line="45")
                     st.pyplot(fig)
 
-                # VIF
                 if st.checkbox("Show multicollinearity diagnostics (VIF)"):
                     vif_df = compute_vif(data, predictors, var_types)
                     st.write("### VIF for predictors")
                     st.dataframe(vif_df)
 
-                # Prediction at user-specified X
                 st.write("### Prediction at specified values")
                 user_inputs = {}
                 for p in predictors:
@@ -699,8 +724,12 @@ elif analysis_choice == "Correlation & regression":
                         levels = data[p].unique()
                         user_inputs[p] = st.selectbox(f"Category for {p}", options=levels)
 
-                alpha = st.number_input("Significance level α for intervals", value=0.05,
-                                        min_value=0.0001, max_value=0.5)
+                alpha = st.number_input(
+                    "Significance level α for intervals",
+                    value=0.05,
+                    min_value=0.0001,
+                    max_value=0.5
+                )
 
                 if st.button("Compute prediction and intervals"):
                     new_df = pd.DataFrame([user_inputs])
