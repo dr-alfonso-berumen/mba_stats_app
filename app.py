@@ -60,9 +60,7 @@ def ci_diff_means_welch(x1, x2, alpha=0.05):
     x2 = pd.Series(x2).dropna()
     n1, n2 = len(x1), len(x2)
     m1, m2 = x1.mean(), x2.mean()
-    s1, s2 = x1.std(ddof=1), x1.std(ddof=1)
-    s1 = x1.std(ddof=1)
-    s2 = x2.std(ddof=1)
+    s1, s2 = x1.std(ddof=1), x2.std(ddof=1)
     se = np.sqrt(s1**2 / n1 + s2**2 / n2)
     df = (s1**2 / n1 + s2**2 / n2) ** 2 / (
         (s1**2 / n1) ** 2 / (n1 - 1) + (s2**2 / n2) ** 2 / (n2 - 1)
@@ -131,6 +129,13 @@ def sanitize_header(row) -> list:
         seen[base] = count + 1
         cols.append(name)
     return cols
+
+
+def interpret_pvalue(p, alpha):
+    if p < alpha:
+        return f"At α = {alpha}, the result is statistically significant (reject H₀)."
+    else:
+        return f"At α = {alpha}, the result is not statistically significant (fail to reject H₀)."
 
 
 # -------------------------------------------------------------------
@@ -318,7 +323,7 @@ if analysis_choice == "Descriptive statistics":
                 ax.set_ylabel(var)
                 st.pyplot(fig)
 
-                # QQ plot (guard against too few points)
+                # QQ plot (Normality check)
                 st.write("### QQ plot (Normality check)")
                 if len(series) >= 3:
                     fig = sm.ProbPlot(series, dist=stats.norm, fit=True).qqplot(line="45")
@@ -386,7 +391,7 @@ if analysis_choice == "Descriptive statistics":
             st.pyplot(fig)
 
 # -------------------------------------------------------------------
-# B. Normal probabilities & critical values
+# B. Normal probabilities & critical values (with curve + shaded area)
 # -------------------------------------------------------------------
 elif analysis_choice == "Normal probabilities & critical values":
     st.header("Normal Probabilities & Critical Values")
@@ -398,6 +403,37 @@ elif analysis_choice == "Normal probabilities & critical values":
         sigma = st.number_input("Standard deviation (σ)", value=1.0, min_value=0.0001)
 
     mode = st.radio("What would you like to compute?", ["Probability given X", "X value given probability"])
+
+    # Helper for plotting shaded normal
+    def plot_normal_shaded(mu, sigma, tail_type, x=None, a=None, b=None, p=None, from_prob=False):
+        xs = np.linspace(mu - 4 * sigma, mu + 4 * sigma, 500)
+        ys = norm.pdf(xs, loc=mu, scale=sigma)
+
+        fig, ax = plt.subplots()
+        ax.plot(xs, ys)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Density")
+        ax.set_title("Normal distribution with shaded probability region")
+
+        mask = np.zeros_like(xs, dtype=bool)
+
+        if not from_prob:
+            # shading based on numeric x / (a,b)
+            if tail_type == "P(X ≤ x)":
+                mask = xs <= x
+            elif tail_type == "P(X ≥ x)":
+                mask = xs >= x
+            else:  # P(a ≤ X ≤ b)
+                mask = (xs >= a) & (xs <= b)
+        else:
+            # from probability, we have x from p
+            if tail_type.startswith("Lower"):
+                mask = xs <= x
+            else:
+                mask = xs >= x
+
+        ax.fill_between(xs[mask], ys[mask], alpha=0.3)
+        return fig
 
     if mode == "Probability given X":
         prob_type = st.radio("Tail type", ["P(X ≤ x)", "P(X ≥ x)", "P(a ≤ X ≤ b)"])
@@ -411,12 +447,17 @@ elif analysis_choice == "Normal probabilities & critical values":
             if prob_type == "P(X ≤ x)":
                 p = norm.cdf(x, loc=mu, scale=sigma)
                 st.write(f"P(X ≤ {x}) = {p:.4f}")
+                fig = plot_normal_shaded(mu, sigma, prob_type, x=x)
             elif prob_type == "P(X ≥ x)":
                 p = 1 - norm.cdf(x, loc=mu, scale=sigma)
                 st.write(f"P(X ≥ {x}) = {p:.4f}")
+                fig = plot_normal_shaded(mu, sigma, prob_type, x=x)
             else:
                 p = norm.cdf(b, loc=mu, scale=sigma) - norm.cdf(a, loc=mu, scale=sigma)
                 st.write(f"P({a} ≤ X ≤ {b}) = {p:.4f}")
+                fig = plot_normal_shaded(mu, sigma, prob_type, a=a, b=b)
+
+            st.pyplot(fig)
 
             results = {"summary": f"mu={mu}, sigma={sigma}, type={prob_type}, probability={p:.4f}"}
             context = {
@@ -435,9 +476,13 @@ elif analysis_choice == "Normal probabilities & critical values":
             if prob_type == "Lower tail (P(X ≤ x))":
                 x = norm.ppf(p, loc=mu, scale=sigma)
                 st.write(f"x such that P(X ≤ x) = {p} is x = {x:.4f}")
+                fig = plot_normal_shaded(mu, sigma, prob_type, x=x, p=p, from_prob=True)
             else:
                 x = norm.ppf(1 - p, loc=mu, scale=sigma)
                 st.write(f"x such that P(X ≥ x) = {p} is x = {x:.4f}")
+                fig = plot_normal_shaded(mu, sigma, prob_type, x=x, p=p, from_prob=True)
+
+            st.pyplot(fig)
 
             results = {"summary": f"mu={mu}, sigma={sigma}, tail={prob_type}, p={p}, x={x:.4f}"}
             context = {
@@ -462,7 +507,7 @@ elif analysis_choice == "One-sample inference (means/proportions)":
         else:
             dv = st.selectbox("Outcome variable (numeric)", quant_vars)
             data = pd.to_numeric(data_df[dv], errors="coerce").dropna()
-            test_value = st.number_input("Null hypothesis mean (H₀: μ = ?)", value=float(data.mean()))
+            test_value = st.number_input("Null hypothesis mean (H₀: μ = ?)", value=float(data.mean()) if len(data) > 0 else 0.0)
             sigma_known = st.checkbox("Use z-test (σ known)? Otherwise t-test.", value=False)
             alpha = st.number_input("Significance level α", value=0.05, min_value=0.0001, max_value=0.5)
 
@@ -482,12 +527,27 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                         z_crit = stats.norm.ppf(1 - alpha / 2)
                         ci_lower = xbar - z_crit * se
                         ci_upper = xbar + z_crit * se
+
+                        out = {
+                            "Test": "One-sample z-test (mean)",
+                            "n": n,
+                            "x̄": round(xbar, 3),
+                            "σ": round(sigma, 3),
+                            "z": round(z_stat, 3),
+                            "p-value": round(p_val, 4),
+                            "CI lower": round(ci_lower, 3),
+                            "CI upper": round(ci_upper, 3),
+                            "α": alpha,
+                        }
+                        st.write("### Test results (structured)")
+                        st.table(pd.DataFrame([out]))
+                        st.info(interpret_pvalue(p_val, alpha))
+
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, σ={sigma:.3f}, "
                             f"z={z_stat:.3f}, p={p_val:.4f}, "
                             f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                         )
-                        st.write(summary)
                         results = {"summary": summary}
                         context = {
                             "description": "Test whether a sample mean differs from a hypothesized population mean using a z-test.",
@@ -499,11 +559,27 @@ elif analysis_choice == "One-sample inference (means/proportions)":
                         xbar, (ci_lower, ci_upper), se, df_ = ci_mean_t(data, alpha=alpha)
                         t_stat = (xbar - test_value) / se
                         p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
+
+                        out = {
+                            "Test": "One-sample t-test (mean)",
+                            "n": n,
+                            "df": df_,
+                            "x̄": round(xbar, 3),
+                            "s": round(s, 3),
+                            "t": round(t_stat, 3),
+                            "p-value": round(p_val, 4),
+                            "CI lower": round(ci_lower, 3),
+                            "CI upper": round(ci_upper, 3),
+                            "α": alpha,
+                        }
+                        st.write("### Test results (structured)")
+                        st.table(pd.DataFrame([out]))
+                        st.info(interpret_pvalue(p_val, alpha))
+
                         summary = (
                             f"n={n}, x̄={xbar:.3f}, s={s:.3f}, t({df_})={t_stat:.3f}, p={p_val:.4f}, "
                             f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                         )
-                        st.write(summary)
                         results = {"summary": summary}
                         context = {
                             "description": "Test whether a sample mean differs from a hypothesized population mean using a t-test.",
@@ -536,11 +612,26 @@ elif analysis_choice == "One-sample inference (means/proportions)":
             z_stat = (p_hat - p0) / se0
             p_val = 2 * (1 - stats.norm.cdf(abs(z_stat)))
             (ci_lower, ci_upper), se_hat = ci_proportion(p_hat, n, alpha=alpha)
+
+            out = {
+                "Test": "One-sample z-test (proportion)",
+                "n": n,
+                "p̂": round(p_hat, 3),
+                "p0": round(p0, 3),
+                "z": round(z_stat, 3),
+                "p-value": round(p_val, 4),
+                "CI lower": round(ci_lower, 3),
+                "CI upper": round(ci_upper, 3),
+                "α": alpha,
+            }
+            st.write("### Test results (structured)")
+            st.table(pd.DataFrame([out]))
+            st.info(interpret_pvalue(p_val, alpha))
+
             summary = (
                 f"n={n}, p̂={p_hat:.3f}, p0={p0:.3f}, z={z_stat:.3f}, p={p_val:.4f}, "
                 f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
             )
-            st.write(summary)
 
             results = {"summary": summary}
             context = {
@@ -583,12 +674,27 @@ elif analysis_choice == "Paired or two-sample comparisons":
                 ci_upper = dbar + t_crit * se
                 p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=df_))
 
+                out = {
+                    "Test": "Paired t-test",
+                    "n": n,
+                    "df": df_,
+                    "mean diff": round(dbar, 3),
+                    "sd diff": round(s_d, 3),
+                    "t": round(t_stat, 3),
+                    "p-value": round(p_val, 4),
+                    "CI lower": round(ci_lower, 3),
+                    "CI upper": round(ci_upper, 3),
+                    "α": alpha,
+                }
+                st.write("### Test results (structured)")
+                st.table(pd.DataFrame([out]))
+                st.info(interpret_pvalue(p_val, alpha))
+
                 summary = (
                     f"n={n}, mean difference={dbar:.3f}, sd_diff={s_d:.3f}, "
                     f"t({df_})={t_stat:.3f}, p={p_val:.4f}, "
                     f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                 )
-                st.write(summary)
 
                 results = {"summary": summary}
                 context = {
@@ -623,8 +729,33 @@ elif analysis_choice == "Paired or two-sample comparisons":
                     diff, (ci_lower, ci_upper), se, df_ = ci_diff_means_welch(x1, x2, alpha=alpha)
 
                     st.write("### Group summaries")
-                    desc = data.groupby(iv)[dv].agg(["count", "mean", "std"])
-                    st.dataframe(desc)
+                    desc = pd.DataFrame({
+                        "group": [g1, g2],
+                        "n": [len(x1), len(x2)],
+                        "mean": [x1.mean(), x2.mean()],
+                        "sd": [x1.std(ddof=1), x2.std(ddof=1)],
+                    })
+                    st.table(desc)
+
+                    out = {
+                        "Test": "Independent two-sample t-test",
+                        "df (Welch)": round(df_, 1),
+                        "mean1 - mean2": round(diff, 3),
+                        "t": round(t_stat, 3),
+                        "p-value": round(p_val, 4),
+                        "CI lower": round(ci_lower, 3),
+                        "CI upper": round(ci_upper, 3),
+                        "α": alpha,
+                    }
+                    st.write("### Test results (structured)")
+                    st.table(pd.DataFrame([out]))
+                    st.info(interpret_pvalue(p_val, alpha))
+
+                    st.write("### Boxplot by group")
+                    fig, ax = plt.subplots()
+                    ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
+                    ax.set_ylabel(dv)
+                    st.pyplot(fig)
 
                     summary = (
                         f"Group 1 ({g1}): n={len(x1)}, mean={x1.mean():.3f}, sd={x1.std(ddof=1):.3f}\n"
@@ -632,13 +763,6 @@ elif analysis_choice == "Paired or two-sample comparisons":
                         f"Difference (mean1 - mean2)={diff:.3f}, t({df_:.1f})={t_stat:.3f}, p={p_val:.4f}, "
                         f"{100*(1-alpha):.1f}% CI=({ci_lower:.3f}, {ci_upper:.3f})"
                     )
-                    st.text(summary)
-
-                    st.write("### Boxplot by group")
-                    fig, ax = plt.subplots()
-                    ax.boxplot([x1, x2], labels=[str(g1), str(g2)])
-                    ax.set_ylabel(dv)
-                    st.pyplot(fig)
 
                     results = {"summary": summary}
                     context = {
@@ -678,15 +802,22 @@ elif analysis_choice == "ANOVA (compare 3+ group means)":
                 st.write("### Group summaries")
                 st.dataframe(desc)
 
-                summary = f"F-statistic={f_stat:.3f}, p-value={p_val:.4f}"
-                st.write("### ANOVA result")
-                st.write(summary)
+                out = {
+                    "Test": "One-way ANOVA",
+                    "F": round(f_stat, 3),
+                    "p-value": round(p_val, 4),
+                }
+                st.write("### Test results (structured)")
+                st.table(pd.DataFrame([out]))
+                st.info(interpret_pvalue(p_val, alpha=0.05))  # ANOVA often uses alpha=0.05
 
                 st.write("### Boxplot by group")
                 fig, ax = plt.subplots()
                 ax.boxplot(samples, labels=[str(g) for g in groups])
                 ax.set_ylabel(dv)
                 st.pyplot(fig)
+
+                summary = f"F-statistic={f_stat:.3f}, p-value={p_val:.4f}"
 
                 results = {"summary": summary + "\n" + desc.to_string()}
                 context = {
@@ -715,9 +846,18 @@ elif analysis_choice == "Categorical association (chi-square)":
         st.dataframe(contingency)
 
         chi2, p, dof, expected = stats.chi2_contingency(contingency)
+
+        out = {
+            "Test": "Chi-square test of independence",
+            "Chi-square": round(chi2, 3),
+            "df": dof,
+            "p-value": round(p, 4),
+        }
+        st.write("### Test results (structured)")
+        st.table(pd.DataFrame([out]))
+        st.info(interpret_pvalue(p, alpha=0.05))
+
         summary = f"Chi-square={chi2:.3f}, df={dof}, p-value={p:.4f}"
-        st.write("### Chi-square result")
-        st.write(summary)
 
         results = {"summary": summary + "\nObserved:\n" + contingency.to_string()}
         context = {
@@ -752,8 +892,15 @@ elif analysis_choice == "Correlation & regression":
             else:
                 r, p_val = stats.pearsonr(df_corr[x_var], df_corr[y_var])
 
-                summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
-                st.write(summary)
+                out = {
+                    "Test": "Pearson correlation",
+                    "r": round(r, 3),
+                    "p-value": round(p_val, 4),
+                    "n": len(df_corr),
+                }
+                st.write("### Correlation results (structured)")
+                st.table(pd.DataFrame([out]))
+                st.info(interpret_pvalue(p_val, alpha=0.05))
 
                 st.write("### Scatterplot with regression line")
                 fig, ax = plt.subplots()
@@ -766,6 +913,8 @@ elif analysis_choice == "Correlation & regression":
                 y_vals = intercept + slope * x_vals
                 ax.plot(x_vals, y_vals)
                 st.pyplot(fig)
+
+                summary = f"Correlation r={r:.3f}, p-value={p_val:.4f}"
 
                 results = {"summary": summary}
                 context = {
@@ -784,13 +933,20 @@ elif analysis_choice == "Correlation & regression":
             predictors = st.multiselect("Predictors (X)", [c for c in data_df.columns if c != dv])
 
             if predictors:
+                # Build safe formula using Q("col") so arbitrary names are allowed
+                def q_name(col):
+                    safe = str(col).replace('"', '\\"')
+                    return f'Q("{safe}")'
+
+                lhs = q_name(dv)
                 terms = []
                 for p in predictors:
                     if var_types[p] == "Categorical":
-                        terms.append(f"C({p})")
+                        terms.append(f"C({q_name(p)})")
                     else:
-                        terms.append(p)
-                formula = dv + " ~ " + " + ".join(terms)
+                        terms.append(q_name(p))
+                formula = lhs + " ~ " + " + ".join(terms)
+
                 data = data_df[[dv] + predictors].dropna()
 
                 # Coerce numeric variables to numeric
@@ -817,7 +973,19 @@ elif analysis_choice == "Correlation & regression":
                     })
                     st.dataframe(coef_df)
 
-                    st.write(f"R-squared={model.rsquared:.3f}, Adjusted R-squared={model.rsquared_adj:.3f}")
+                    overall = {
+                        "R-squared": round(model.rsquared, 3),
+                        "Adj R-squared": round(model.rsquared_adj, 3),
+                        "F-statistic": round(model.fvalue, 3) if model.fvalue is not None else None,
+                        "F p-value": round(model.f_pvalue, 4) if model.f_pvalue is not None else None,
+                    }
+                    st.write("### Model fit (overall)")
+                    st.table(pd.DataFrame([overall]))
+                    if model.f_pvalue is not None:
+                        st.info(
+                            "Overall model significance: "
+                            + interpret_pvalue(model.f_pvalue, alpha=0.05)
+                        )
 
                     if st.checkbox("Show regression diagnostics (residuals & plots)"):
                         fitted = model.fittedvalues
